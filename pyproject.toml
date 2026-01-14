@@ -1,0 +1,22 @@
+[project]
+name = "archives-scraper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "httpx>=0.28.1",
+    "lxml>=6.0.2",
+    "markdown>=3.10",
+    "numpy>=2.4.1",
+    "ocrmypdf>=16.13.0",
+    "pgvector>=0.4.2",
+    "pillow>=12.1.0",
+    "psycopg>=3.3.2",
+    "pymupdf>=1.26.7",
+    "pywin32>=311",
+    "sentence-transformers>=5.2.0",
+    "sqlalchemy>=2.0.45",
+    "unidecode>=1.4.0",
+]
