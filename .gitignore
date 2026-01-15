@@ -82,3 +82,6 @@ text_extractor_*/
 # Model cache (sentence-transformers, huggingface)
 models/
 .cache/
+
+# development folder
+development/
