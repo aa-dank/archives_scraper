@@ -2,13 +2,10 @@
 
 # --- imports ---
 import logging
-import pythoncom
 import subprocess
 import tempfile
 import unicodedata
-import win32com.client
 from bs4 import BeautifulSoup
-from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -190,33 +187,3 @@ def run_pandoc(src: str, pandoc_path: str, to_format: str = "plain") -> Path:
     cmd = [pandoc_path, src, "-t", to_format, "-o", str(out)]
     subprocess.run(cmd, check=True)
     return out
-
-@contextmanager
-def com_app(dispatch_name: str, visible: bool = False):
-    """
-    Context manager for controlling a COM application (e.g., Word, PowerPoint).
-
-    Parameters
-    ----------
-    dispatch_name : str
-        ProgID for the COM application (e.g., "Word.Application").
-    visible : bool, optional
-        Whether the COM window is visible, by default False.
-
-    Yields
-    ------
-    COM object
-        The initialized COM application instance.
-
-    Notes
-    -----
-    Ensures CoInitialize/CoUninitialize around the COM session.
-    """
-    pythoncom.CoInitialize()
-    app = win32com.client.DispatchEx(dispatch_name)
-    app.Visible = visible
-    try:
-        yield app
-    finally:
-        app.Quit()
-        pythoncom.CoUninitialize()

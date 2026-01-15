@@ -6,7 +6,7 @@ import os
 import markdown
 import re
 from abc import ABC, abstractmethod
-from datetime import datetime, date
+from datetime import date
 from pathlib import Path
 from .extraction_utils import validate_file, strip_html
 from typing import List
