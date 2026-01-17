@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_db_engine():
-    """Create and return a SQLAlchemy engine for the project database."""
+    """Create and return a SQLAlchemy engine for the database."""
     conn_string = (
         f"postgresql+psycopg://{os.getenv('PROJECT_DB_USERNAME')}:{os.getenv('PROJECT_DB_PASSWORD')}"
         f"@{os.getenv('PROJECT_DB_HOST')}:{os.getenv('PROJECT_DB_PORT')}/{os.getenv('PROJECT_DB_NAME')}"

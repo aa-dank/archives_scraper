@@ -2,6 +2,7 @@
 
 # --- imports ---
 import logging
+from typing import Optional
 import subprocess
 import tempfile
 import unicodedata
@@ -187,3 +188,15 @@ def run_pandoc(src: str, pandoc_path: str, to_format: str = "plain") -> Path:
     cmd = [pandoc_path, src, "-t", to_format, "-o", str(out)]
     subprocess.run(cmd, check=True)
     return out
+
+def init_tesseract(cmd: Optional[str] = None):
+    """Configure pytesseract to use a specific Tesseract executable if provided.
+
+    Parameters:
+        cmd (Optional[str]): Full path to tesseract binary; uses PATH if None.
+    """
+    import pytesseract
+    # Set custom tesseract command if given
+    if cmd:
+        pytesseract.pytesseract.tesseract_cmd = cmd
+
