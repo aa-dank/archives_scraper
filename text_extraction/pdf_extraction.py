@@ -205,6 +205,7 @@ class PDFTextExtractor(FileTextExtractor):
     max_stream_size : int
         Maximum file size (bytes) to process in memory before using a temp file.
     """
+    # Extensions are lowercase, no leading dot (as per spec)
     file_extensions = ['pdf']
 
     def __init__(self):

@@ -58,6 +58,7 @@ class TextFileTextExtractor(FileTextExtractor):
     like .txt, .md, .csv, etc. It handles different encodings and provides
     basic error handling.
     """
+    # Extensions are lowercase, no leading dot (as per spec)
     file_extensions = ['txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'ini', 'cfg', 'conf']
     
     def __init__(self):
@@ -130,6 +131,7 @@ class TikaTextExtractor(FileTextExtractor):
     """
     Fallback extractor using a containerized Apache Tika (REST API).
     """
+    # Extensions are lowercase, no leading dot (as per spec)
     # catch‐all for most formats; register this last in your extractor list
     file_extensions = [
         'pdf','doc','docx','ppt','pptx','xls','xlsx','rtf',

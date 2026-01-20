@@ -2,6 +2,7 @@
 
 import logging
 import numpy as np
+from collections.abc import Sequence
 from .base import EmbeddingModel
 from sentence_transformers import SentenceTransformer
 
@@ -27,7 +28,7 @@ class MiniLMEmbedder(EmbeddingModel):
         self.encoding_params: dict = encoding_params
         
 
-    def encode(self, texts):
+    def encode(self, texts: Sequence[str]) -> list[np.ndarray]:
         """
         Encode the provided texts into embeddings.
         
@@ -37,11 +38,22 @@ class MiniLMEmbedder(EmbeddingModel):
         Returns:
             List[np.ndarray]: A list of L2-normalized embedding vectors
         """
+        # Handle single string or empty input
+        if isinstance(texts, str):
+            texts = [texts]
+        if not texts:
+            return []
+        
         # The SentenceTransformer model.encode method already returns L2-normalized vectors
         embeddings = self.model.encode(texts, **self.encoding_params)
         
-        # Convert to list of numpy arrays if it's not already in that format
-        if isinstance(embeddings, np.ndarray) and len(embeddings.shape) == 2:
-            embeddings = [embedding for embedding in embeddings]
+        # Always return list of numpy arrays
+        if isinstance(embeddings, np.ndarray):
+            if len(embeddings.shape) == 1:
+                # Single embedding
+                return [embeddings]
+            else:
+                # Multiple embeddings
+                return [embedding for embedding in embeddings]
             
-        return embeddings
+        return list(embeddings)
