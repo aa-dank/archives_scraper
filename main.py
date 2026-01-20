@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import func, or_
@@ -57,8 +57,9 @@ def next_file_needing_content(
 
 def main():
     load_dotenv()
+    minilm_model_name = "all-MiniLM-L6-v2"
     embedders = {
-        "minilm": MiniLMEmbedder(),
+        "minilm": MiniLMEmbedder(model=minilm_model_name),
     }
     
     pdf_extractor = PDFTextExtractor()
@@ -69,7 +70,7 @@ def main():
     ]
 
     extensions = []
-    [extensions + extractor.file_extensions for extractor in extractors]
+    [extensions.extend(extractor.file_extensions) for extractor in extractors]
     engine = get_db_engine()
     with Session(engine) as session:
         while True:
@@ -91,9 +92,21 @@ def main():
             try:
                 text = extractor.extract_text(file_record.path)
                 print(f"Extracted {len(text)} characters from file ID {file_record.id}")
+                minilm_text_embeddings = embedders["minilm"].encode(text)
 
-                # Here you would typically save the extracted text back to the database.
-                # For this example, we just print the length of the extracted text.
+                # Upsert FileContent record
+                content = file_record.content
+                if content is None:
+                    content = FileContent(file_hash=file_record.hash)
+                    file_record.content = content  # establishes relationship
+
+                content.source_text = text
+                content.text_length = len(text)
+                content.minilm_model = minilm_model_name
+                content.minilm_emb = minilm_text_embeddings.vector
+                content.updated_at = datetime.now(timezone.utc)
+                session.add(content)
+                session.commit()
 
             except Exception as e:
                 print(f"Error processing file ID {file_record.id}: {e}")
