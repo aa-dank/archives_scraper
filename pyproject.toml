@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "beautifulsoup4>=4.14.3",
-    "dotenv>=0.9.9",
+    "click>=8.3.1",
     "httpx>=0.28.1",
     "lxml>=6.0.2",
     "markdown>=3.10",
@@ -17,6 +17,7 @@ dependencies = [
     "psycopg>=3.3.2",
     "pymupdf>=1.26.7",
     "pytesseract>=0.3.13",
+    "python-dotenv>=1.2.1",
     "pywin32>=311",
     "sentence-transformers>=5.2.0",
     "sqlalchemy>=2.0.45",
