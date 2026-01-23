@@ -6,7 +6,7 @@ import fnmatch
 import re
 from pathlib import Path, PurePosixPath
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text, Boolean, Numeric, Index, Date, or_, Float, JSON
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text, Boolean, Numeric, Index, text, Float, JSON, CheckConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -165,3 +165,45 @@ class WorkerTask(Base):
     function_name = Column(String(255))
     status = Column(String(255))
     task_results = Column(JSON)
+
+
+class FileContentFailure(Base):
+    __tablename__ = "file_content_failures"
+    __table_args__ = (
+        CheckConstraint(
+            "stage in ('extract', 'embed')",
+            name="file_content_failures_stage_check",
+        ),
+    )
+    file_hash = Column(
+        String,
+        ForeignKey("files.hash", ondelete="CASCADE"),
+        primary_key=True,
+        comment="Hash of the file that failed processing. One active failure record per file.",
+    )
+    stage = Column(
+        String(16),
+        nullable=False,
+        comment="Processing stage that failed: extract (text extraction) or embed (embedding generation).",
+    )
+    error = Column(
+        Text,
+        comment="Human-readable error message or exception summary for the most recent failure.",
+    )
+    attempts = Column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+        comment="Number of failed processing attempts recorded for this file.",
+    )
+    last_failed_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="Timestamp of the most recent failure occurrence.",
+    )
+    file = relationship(
+        "File",
+        foreign_keys=[file_hash],
+        passive_deletes=True,
+    )

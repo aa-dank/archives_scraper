@@ -93,6 +93,14 @@ from worker import run_worker
     help="Output logs in JSON format",
 )
 @click.option(
+    "--include-failures/--exclude-failures",
+    "include_failures",
+    default=False,
+    envvar="INCLUDE_FAILURES",
+    show_default=True,
+    help="Include/exclude files with previous failures for retry",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Perform dry run without persisting changes (not yet implemented)",
@@ -108,6 +116,7 @@ def main(
     log_level: str,
     log_file: str | None,
     json_logs: bool,
+    include_failures: bool,
     dry_run: bool,
 ) -> None:
     """
@@ -182,6 +191,7 @@ def main(
             extensions=ext_set,
             max_chars=max_chars,
             enable_embedding=enable_embedding,
+            include_failures=include_failures,
         )
         
         logger.info(f"Worker exited with code {exit_code}")

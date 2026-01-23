@@ -11,22 +11,57 @@ This module provides the core worker logic for:
 
 No CLI parsing or global state - callable from anywhere.
 """
-
+import os
 import time
-from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable
 
 import numpy as np
-from sqlalchemy import or_
+from sqlalchemy import text
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import func
 
-from db.models import File, FileContent
+from db.models import File, FileContent, FileContentFailure
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Stage constants for file_content_failures
+STAGE_EXTRACT = "extract"
+STAGE_EMBED = "embed"
+
+def assemble_file_server_filepath(base_mount: str,
+                                  server_dir: str,
+                                  filename: str = None) -> Path:
+    """
+    Join a server-relative path + filename onto a machine-specific
+    mount-point.
+
+    Parameters
+    ----------
+    base_mount : str
+        The local mount of the records share, e.g.
+        r"N:\PPDO\Records"  (Windows)  or  "/mnt/records" (Linux).
+    server_dir : str
+        The value from file_locations.file_server_directories
+        (always stored with forward-slashes).
+    filename   : str
+        file_locations.filename
+
+    Returns
+    -------
+    pathlib.Path  – ready for open(), exists(), etc.
+    """
+    # 1) Treat the DB field as a *POSIX* path (it always uses “/”)
+    rel_parts = PurePosixPath(server_dir).parts     # -> tuple of segments
+
+    # 2) Let Path figure out the separator style of this machine
+    full_path = Path(base_mount).joinpath(*rel_parts)
+    if filename:
+        full_path = full_path / filename
+    
+    return full_path
 
 def utcnow() -> datetime:
     """Return current UTC datetime with timezone info."""
@@ -71,15 +106,14 @@ def next_files_needing_content(
     *,
     extensions: set[str] | None = None,
     limit: int = 10,
-    cutoff: datetime | None = None,
+    include_failures: bool = False,
 ) -> list:
     """
     Fetch the next batch of files needing content extraction.
     
-    Returns files that either:
-    - Have no FileContent row
-    - Have FileContent with no updated_at (stale sentinel)
-    - Have FileContent updated before cutoff (for reprocessing)
+    Returns files that have no FileContent row (Option A semantics).
+    By default, excludes files with existing failure records to prevent
+    infinite requeue loops.
     
     Parameters
     ----------
@@ -89,8 +123,9 @@ def next_files_needing_content(
         If provided, only return files with these extensions (case-insensitive).
     limit : int, default=10
         Maximum number of files to return.
-    cutoff : datetime | None
-        If provided, include files with content updated before this time.
+    include_failures : bool, default=False
+        If True, include files that have failure records (for retry).
+        If False (default), exclude files with any failure record.
     
     Returns
     -------
@@ -101,6 +136,7 @@ def next_files_needing_content(
         session.query(File)
         .options(selectinload(File.locations))
         .outerjoin(FileContent, FileContent.file_hash == File.hash)
+        .outerjoin(FileContentFailure, FileContentFailure.file_hash == File.hash)
     )
     
     # Filter by extensions if provided
@@ -108,19 +144,18 @@ def next_files_needing_content(
         normalized = [ext.lower().lstrip('.') for ext in extensions]
         query = query.filter(func.lower(File.extension).in_(normalized))
     
-    # Filter for files needing processing
-    conditions = [
-        FileContent.file_hash.is_(None),  # No content row at all
-        FileContent.updated_at.is_(None),  # Sentinel row without timestamp
-    ]
+    # Base condition: no successful FileContent row (Option A)
+    query = query.filter(FileContent.file_hash.is_(None))
     
-    if cutoff:
-        conditions.append(FileContent.updated_at < cutoff)
+    # Apply failure filtering
+    if not include_failures:
+        # Exclude files that have a failure record
+        query = query.filter(FileContentFailure.file_hash.is_(None))
     
-    query = query.filter(or_(*conditions)).order_by(File.id).limit(limit)
+    query = query.order_by(File.id).limit(limit)
     
     files = query.all()
-    logger.debug(f"Fetched {len(files)} files needing content extraction")
+    logger.debug(f"Fetched {len(files)} files needing content extraction (include_failures={include_failures})")
     return files
 
 
@@ -170,6 +205,7 @@ def process_one_file(
         "chars": 0,
         "duration_ms": 0,
     }
+    current_stage = STAGE_EXTRACT
     
     try:
         # Determine extension
@@ -178,16 +214,18 @@ def process_one_file(
         # Select extractor
         extractor = extractors_by_ext.get(ext)
         if not extractor:
+            error_msg = f"no extractor for ext={ext}"
             logger.warning(
                 f"No extractor for file",
                 extra={
                     "file_id": file_record.id,
                     "ext": ext,
                     "path": getattr(file_record, 'path', None),
+                    "stage": STAGE_EXTRACT,
                 }
             )
-            # Persist sentinel to prevent infinite requeue
-            _persist_failure_sentinel(session, file_record, now_fn)
+            # Record failure to prevent infinite requeue
+            _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
             result["status"] = "no_extractor"
             result["duration_ms"] = int((time.time() - start_time) * 1000)
             return result
@@ -195,16 +233,21 @@ def process_one_file(
         # Get file path from first location
         file_path = None
         if file_record.locations:
-            file_path = getattr(file_record.locations[0], 'local_filepath', lambda x: None)(None)
-        if not file_path:
-            file_path = getattr(file_record, 'path', None)
+            record_location_directories = file_record.locations[0].file_server_directories
+            record_filename = file_record.locations[0].filename
+            file_path = assemble_file_server_filepath(
+                base_mount=os.environ.get("FILE_SERVER_MOUNT", ""),
+                server_dir=record_location_directories,
+                filename=record_filename,
+            )
         
         if not file_path:
+            error_msg = "no path available"
             logger.error(
                 f"No path available for file",
-                extra={"file_id": file_record.id}
+                extra={"file_id": file_record.id, "stage": STAGE_EXTRACT}
             )
-            _persist_failure_sentinel(session, file_record, now_fn)
+            _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
             result["status"] = "error"
             result["duration_ms"] = int((time.time() - start_time) * 1000)
             return result
@@ -218,30 +261,37 @@ def process_one_file(
                 "ext": ext,
             }
         )
-        text = extractor(str(file_path))
+        extracted_text = extractor(str(file_path))
         
         # Truncate if needed
-        if max_chars and len(text) > max_chars:
+        if max_chars and len(extracted_text) > max_chars:
             logger.warning(
                 f"Truncating extracted text",
                 extra={
                     "file_id": file_record.id,
-                    "original_chars": len(text),
+                    "original_chars": len(extracted_text),
                     "max_chars": max_chars,
                 }
             )
-            text = text[:max_chars]
+            
+            # truncate the text by cutting at last newline/space before max_chars
+            truncated = extracted_text[:max_chars]
+            last_break = max(truncated.rfind("\n"), truncated.rfind(" "))
+            if last_break > max_chars * 0.8:
+                truncated = truncated[:last_break]
+            extracted_text = truncated
         
-        result["chars"] = len(text)
+        result["chars"] = len(extracted_text)
         
         # Generate embedding if enabled
+        current_stage = STAGE_EMBED
         embedding_vector = None
-        if enable_embedding and text.strip():
+        if enable_embedding and extracted_text.strip():
             logger.debug(
                 f"Generating embedding for file",
-                extra={"file_id": file_record.id, "chars": len(text)}
+                extra={"file_id": file_record.id, "chars": len(extracted_text)}
             )
-            embeddings = embedder.encode([text])
+            embeddings = embedder.encode([extracted_text])
             if embeddings and len(embeddings) > 0:
                 embedding_vector = embeddings[0]
         
@@ -251,8 +301,8 @@ def process_one_file(
             content = FileContent(file_hash=file_record.hash)
             file_record.content = content
         
-        content.source_text = text
-        content.text_length = len(text)
+        content.source_text = extracted_text
+        content.text_length = len(extracted_text)
         content.updated_at = now_fn()
         
         if embedding_vector is not None:
@@ -280,11 +330,14 @@ def process_one_file(
         session.add(content)
         session.commit()
         
+        # Clear any existing failure record on success
+        _clear_failure(session, file_record.hash)
+        
         logger.info(
             f"Successfully processed file",
             extra={
                 "file_id": file_record.id,
-                "chars": len(text),
+                "chars": len(extracted_text),
                 "status": "ok",
             }
         )
@@ -302,15 +355,16 @@ def process_one_file(
             extra={
                 "file_id": file_record.id,
                 "error": str(e),
+                "stage": current_stage,
             }
         )
         
-        # Persist failure marker in new transaction
+        # Record failure in new transaction
         try:
-            _persist_failure_sentinel(session, file_record, now_fn)
+            _upsert_failure(session, file_record.hash, current_stage, str(e)[:500], now_fn)
         except Exception as persist_error:
             logger.error(
-                f"Failed to persist error sentinel",
+                f"Failed to record failure",
                 extra={
                     "file_id": file_record.id,
                     "error": str(persist_error),
@@ -322,42 +376,76 @@ def process_one_file(
         return result
 
 
-def _persist_failure_sentinel(
+def _upsert_failure(
     session: Session,
-    file_record: Any,
-    now_fn: Callable[[], datetime],
+    file_hash: str,
+    stage: str,
+    error: str,
+    now_fn: Callable[[], datetime] = utcnow,
 ) -> None:
     """
-    Persist an empty FileContent row to mark a file as processed but failed.
+    Insert or update a failure record in file_content_failures.
     
-    This prevents infinite requeue loops for files that cannot be processed.
+    On conflict (existing failure for this file_hash), increments attempts
+    and updates the stage, error message, and timestamp.
     
     Parameters
     ----------
     session : Session
         Active SQLAlchemy session.
-    file_record : Any
-        File model instance.
+    file_hash : str
+        Hash of the file that failed.
+    stage : str
+        Processing stage that failed (STAGE_EXTRACT or STAGE_EMBED).
+    error : str
+        Human-readable error message.
     now_fn : Callable[[], datetime]
         Function returning current UTC datetime.
     """
-    content = file_record.content
-    if content is None:
-        content = FileContent(file_hash=file_record.hash)
-        file_record.content = content
+    upsert_sql = text("""
+        INSERT INTO file_content_failures (file_hash, stage, error, attempts, last_failed_at)
+        VALUES (:file_hash, :stage, :error, 1, :now)
+        ON CONFLICT (file_hash)
+        DO UPDATE SET
+            stage = EXCLUDED.stage,
+            error = EXCLUDED.error,
+            attempts = file_content_failures.attempts + 1,
+            last_failed_at = EXCLUDED.last_failed_at
+    """)
     
-    # Empty text with updated timestamp serves as sentinel
-    content.source_text = ""
-    content.text_length = 0
-    content.updated_at = now_fn()
-    
-    session.add(content)
+    session.execute(
+        upsert_sql,
+        {"file_hash": file_hash, "stage": stage, "error": error, "now": now_fn()}
+    )
     session.commit()
     
     logger.debug(
-        f"Persisted failure sentinel",
-        extra={"file_id": file_record.id}
+        f"Recorded failure",
+        extra={"file_hash": file_hash, "stage": stage}
     )
+
+
+def _clear_failure(session: Session, file_hash: str) -> None:
+    """
+    Delete any existing failure record for a file upon successful processing.
+    
+    Parameters
+    ----------
+    session : Session
+        Active SQLAlchemy session.
+    file_hash : str
+        Hash of the successfully processed file.
+    """
+    result = session.query(FileContentFailure).filter(
+        FileContentFailure.file_hash == file_hash
+    ).delete()
+    
+    if result > 0:
+        session.commit()
+        logger.debug(
+            f"Cleared failure record on success",
+            extra={"file_hash": file_hash}
+        )
 
 
 def run_worker(
@@ -372,6 +460,7 @@ def run_worker(
     max_chars: int | None = None,
     backoff_seconds: float = 30.0,
     enable_embedding: bool = True,
+    include_failures: bool = False,
 ) -> int:
     """
     Main worker execution loop.
@@ -400,6 +489,9 @@ def run_worker(
         Seconds to sleep when no work found before next poll.
     enable_embedding : bool, default=True
         Whether to generate embeddings.
+    include_failures : bool, default=False
+        If True, include files with failure records for retry.
+        If False (default), exclude files that have previously failed.
     
     Returns
     -------
@@ -429,6 +521,7 @@ def run_worker(
             "limit": limit,
             "extensions": list(extensions) if extensions else None,
             "enable_embedding": enable_embedding,
+            "include_failures": include_failures,
         }
     )
     
@@ -443,6 +536,7 @@ def run_worker(
                     session,
                     extensions=extensions,
                     limit=batch_limit,
+                    include_failures=include_failures,
                 )
                 
                 if not files:
