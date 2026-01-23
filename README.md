@@ -20,9 +20,10 @@ Pure execution engine with no CLI dependencies.
 - `run_worker()` - Main execution loop with configurable polling
 
 **Failure Handling:**
-- No extractor: Persists empty FileContent sentinel to prevent requeue
-- Exception: Rollbacks transaction, persists failure marker in new transaction
-- Never allows infinite requeue loops
+- Failures are recorded in the `file_content_failures` table with stage, error, and attempt count
+- `FileContent` rows only exist for successful extractions (Option A semantics)
+- Failed files are excluded from requeue by default, preventing infinite loops
+- Successful processing clears any prior failure record
 
 ### 3. `cli.py`
 Click-based CLI wrapper around `run_worker()`.
@@ -53,6 +54,8 @@ python -m cli --poll-seconds 5.0
 --max-chars INTEGER       Truncate extracted text to N characters
 --embed / --no-embed      Enable/disable embedding [default: embed]
 --embedder [minilm]       Embedder model to use [default: minilm]
+--include-failures / --exclude-failures
+                          Include/exclude previously failed files [default: exclude]
 --log-level [debug|info|warning|error]  Logging level [default: INFO]
 --log-file PATH           Path to log file
 --json-logs               Output logs in JSON format
@@ -72,6 +75,7 @@ export LOG_LEVEL=DEBUG
 export LOG_FILE=/var/log/worker.log
 export JSON_LOGS=true
 export ENABLE_EMBEDDING=false
+export INCLUDE_FAILURES=false
 ```
 
 ### Examples
@@ -160,27 +164,37 @@ logger.info(
 
 This enables JSON logging and easier debugging without code changes.
 
-## Future Enhancements
+## Failure Tracking
 
-As noted in the spec, the current system uses empty `FileContent` rows as failure sentinels. The recommended future improvement is a dedicated failure table:
+The system uses a dedicated `file_content_failures` table to track processing failures:
 
 ```sql
 CREATE TABLE file_content_failures (
-    file_id INT,
-    stage TEXT,
+    file_hash TEXT PRIMARY KEY,
+    stage TEXT NOT NULL CHECK (stage IN ('extract', 'embed')),
     error TEXT,
-    attempts INT,
-    updated_at TIMESTAMP
+    attempts INTEGER NOT NULL DEFAULT 1,
+    last_failed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
-This would allow distinguishing between legitimate empty files and processing failures.
+**Semantics:**
+- `stage` indicates where failure occurred: `extract` (text extraction) or `embed` (embedding generation)
+- `attempts` increments on each retry failure
+- On success, the failure record is deleted
+- By default, files with failure records are excluded from processing
+- Use `--include-failures` to retry previously failed files
+
+**Retry example:**
+```bash
+python -m cli --include-failures --once --limit 50
+```
 
 ## Migration from Old System
 
 The old monolithic `main.py` has been preserved as `main_old.py`. The new system provides:
 - Better separation of concerns
 - Structured logging instead of print statements
-- Proper failure handling to prevent infinite requeues
+- Dedicated failure tracking table (no more sentinel rows)
 - CLI argument parsing with environment variable support
 - Testable, callable components (no global state)
