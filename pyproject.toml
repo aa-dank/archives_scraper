@@ -18,8 +18,19 @@ dependencies = [
     "pymupdf>=1.26.7",
     "pytesseract>=0.3.13",
     "python-dotenv>=1.2.1",
-    "pywin32>=311",
     "sentence-transformers>=5.2.0",
     "sqlalchemy>=2.0.45",
     "unidecode>=1.4.0",
 ]
+
+[tool.setuptools]
+packages = ["db", "embedding", "text_extraction"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]

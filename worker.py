@@ -173,6 +173,7 @@ def process_one_file(
     Process a single file: extract text, embed, and persist results.
     
     Implements proper failure semantics:
+    dry_run: bool = False,
     - No extractor: persist empty FileContent sentinel to prevent requeue
     - Exception: rollback and persist failure marker in new transaction
     
@@ -197,6 +198,8 @@ def process_one_file(
     -------
     dict
         Status information with keys: status, chars, duration_ms
+    dry_run : bool
+        If True, do not persist changes to database.
         Status values: "ok", "no_extractor", "error"
     """
     start_time = time.time()
@@ -223,8 +226,9 @@ def process_one_file(
                     "path": getattr(file_record, 'path', None),
                     "stage": STAGE_EXTRACT,
                 }
-            )
-            # Record failure to prevent infinite requeue
+            if not dry_run:
+                # Record failure to prevent infinite requeue
+                _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
             _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
             result["status"] = "no_extractor"
             result["duration_ms"] = int((time.time() - start_time) * 1000)
@@ -246,7 +250,8 @@ def process_one_file(
             logger.error(
                 f"No path available for file",
                 extra={"file_id": file_record.id, "stage": STAGE_EXTRACT}
-            )
+            if not dry_run:
+                _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
             _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
             result["status"] = "error"
             result["duration_ms"] = int((time.time() - start_time) * 1000)
@@ -326,11 +331,14 @@ def process_one_file(
                     f"Unknown embedding dimension",
                     extra={"file_id": file_record.id, "dimension": dim}
                 )
-        
-        session.add(content)
-        session.commit()
-        
-        # Clear any existing failure record on success
+        if not dry_run:
+            session.add(content)
+            session.commit()
+
+            # Clear any existing failure record on success
+            _clear_failure(session, file_record.hash)
+        else:
+            session.rollback()
         _clear_failure(session, file_record.hash)
         
         logger.info(
@@ -389,6 +397,7 @@ def _upsert_failure(
     On conflict (existing failure for this file_hash), increments attempts
     and updates the stage, error message, and timestamp.
     
+    dry_run: bool = False,
     Parameters
     ----------
     session : Session
@@ -420,6 +429,8 @@ def _upsert_failure(
     session.commit()
     
     logger.debug(
+    dry_run : bool, default=False
+        If True, do not persist changes to database.
         f"Recorded failure",
         extra={"file_hash": file_hash, "stage": stage}
     )
@@ -450,6 +461,7 @@ def _clear_failure(session: Session, file_hash: str) -> None:
 
 def run_worker(
     *,
+            "dry_run": dry_run,
     session_factory: Callable,
     extractors: list,
     embedder: Any,
@@ -489,6 +501,7 @@ def run_worker(
         Seconds to sleep when no work found before next poll.
     enable_embedding : bool, default=True
         Whether to generate embeddings.
+                        dry_run=dry_run,
     include_failures : bool, default=False
         If True, include files with failure records for retry.
         If False (default), exclude files that have previously failed.

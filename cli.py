@@ -103,7 +103,7 @@ from worker import run_worker
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Perform dry run without persisting changes (not yet implemented)",
+    help="Perform dry run without persisting changes",
 )
 def main(
     once: bool,
@@ -140,9 +140,8 @@ def main(
     
     logger.info("Starting extraction worker CLI")
     
-    # Dry run warning
     if dry_run:
-        logger.warning("Dry run mode is not yet implemented, proceeding normally")
+        logger.info("Dry run enabled: no database changes will be persisted")
     
     # Parse extensions
     ext_set = None
@@ -192,6 +191,7 @@ def main(
             max_chars=max_chars,
             enable_embedding=enable_embedding,
             include_failures=include_failures,
+            dry_run=dry_run,
         )
         
         logger.info(f"Worker exited with code {exit_code}")
