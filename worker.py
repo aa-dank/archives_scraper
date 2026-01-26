@@ -168,6 +168,7 @@ def process_one_file(
     now_fn: Callable[[], datetime] = utcnow,
     max_chars: int | None = None,
     enable_embedding: bool = True,
+    dry_run: bool = False,
 ) -> dict:
     """
     Process a single file: extract text, embed, and persist results.
@@ -226,10 +227,10 @@ def process_one_file(
                     "path": getattr(file_record, 'path', None),
                     "stage": STAGE_EXTRACT,
                 }
+            )
             if not dry_run:
                 # Record failure to prevent infinite requeue
                 _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
-            _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
             result["status"] = "no_extractor"
             result["duration_ms"] = int((time.time() - start_time) * 1000)
             return result
@@ -250,9 +251,9 @@ def process_one_file(
             logger.error(
                 f"No path available for file",
                 extra={"file_id": file_record.id, "stage": STAGE_EXTRACT}
+            )
             if not dry_run:
                 _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
-            _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
             result["status"] = "error"
             result["duration_ms"] = int((time.time() - start_time) * 1000)
             return result
@@ -339,7 +340,6 @@ def process_one_file(
             _clear_failure(session, file_record.hash)
         else:
             session.rollback()
-        _clear_failure(session, file_record.hash)
         
         logger.info(
             f"Successfully processed file",
@@ -429,8 +429,6 @@ def _upsert_failure(
     session.commit()
     
     logger.debug(
-    dry_run : bool, default=False
-        If True, do not persist changes to database.
         f"Recorded failure",
         extra={"file_hash": file_hash, "stage": stage}
     )
@@ -461,7 +459,7 @@ def _clear_failure(session: Session, file_hash: str) -> None:
 
 def run_worker(
     *,
-            "dry_run": dry_run,
+    dry_run: bool = False,
     session_factory: Callable,
     extractors: list,
     embedder: Any,
@@ -501,7 +499,6 @@ def run_worker(
         Seconds to sleep when no work found before next poll.
     enable_embedding : bool, default=True
         Whether to generate embeddings.
-                        dry_run=dry_run,
     include_failures : bool, default=False
         If True, include files with failure records for retry.
         If False (default), exclude files that have previously failed.
@@ -574,6 +571,7 @@ def run_worker(
                         file_record=file_record,
                         max_chars=max_chars,
                         enable_embedding=enable_embedding,
+                        dry_run=dry_run,
                     )
                     batch_results[result["status"]] += 1
                     total_processed += 1
