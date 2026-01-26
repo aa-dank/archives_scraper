@@ -43,7 +43,7 @@ STAGE_EMBED = "embed"
 def assemble_file_server_filepath(base_mount: str,
                                   server_dir: str,
                                   filename: str = None) -> Path:
-    """
+    r"""
     Join a server-relative path + filename onto a machine-specific
     mount-point.
 
@@ -51,7 +51,7 @@ def assemble_file_server_filepath(base_mount: str,
     ----------
     base_mount : str
         The local mount of the records share, e.g.
-        r"N:\PPDO\Records"  (Windows)  or  "/mnt/records" (Linux).
+        r"N:\PPDO\Records"  (Windows)  or  "/mnt/n/PPDO/Records" (Linux).
     server_dir : str
         The value from file_locations.file_server_directories
         (always stored with forward-slashes).
@@ -149,7 +149,7 @@ def next_files_needing_content(
     )
     
     # Filter by extensions if provided
-    if extensions:
+    if extensions is not None:
         normalized = [ext.lower().lstrip('.') for ext in extensions]
         query = query.filter(func.lower(File.extension).in_(normalized))
     
@@ -542,6 +542,13 @@ def run_worker(
     if not registry:
         logger.error("Failed to build extractor registry")
         return 2
+
+    # Restrict extensions to those supported by extractors
+    supported_extensions = set(registry.keys())
+    if extensions:
+        extensions = extensions.intersection(supported_extensions)
+    else:
+        extensions = supported_extensions
     
     logger.info(
         f"Worker starting",
