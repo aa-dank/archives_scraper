@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 def get_db_engine():
     """Create and return a SQLAlchemy engine for the database."""
     conn_string = (
-        f"postgresql+psycopg://{os.getenv('PROJECT_DB_USERNAME')}:{os.getenv('PROJECT_DB_PASSWORD')}"
-        f"@{os.getenv('PROJECT_DB_HOST')}:{os.getenv('PROJECT_DB_PORT')}/{os.getenv('PROJECT_DB_NAME')}"
+        f"postgresql+psycopg://{os.getenv('DB_USERNAME')}:{os.getenv('DB_PASSWORD')}"
+        f"@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
     )
     logger.info("Creating database engine")
     return create_engine(conn_string)
@@ -41,14 +41,14 @@ def backup_database(backup_dir: str, compress: bool = False) -> str:
         backup_path += ".bz2"
     # Set PGPASSWORD for pg_dump
     env = os.environ.copy()
-    env['PGPASSWORD'] = os.getenv('PROJECT_DB_PASSWORD')
+    env['PGPASSWORD'] = os.getenv('DB_PASSWORD')
     # Prepare pg_dump command
     pg_dump_cmd = [
         "pg_dump",
-        "-h", os.getenv("PROJECT_DB_HOST", "localhost"),
-        "-p", os.getenv("PROJECT_DB_PORT", "5432"),
-        "-U", os.getenv("PROJECT_DB_USERNAME"),
-        "-d", os.getenv("PROJECT_DB_NAME"),
+        "-h", os.getenv("DB_HOST", "localhost"),
+        "-p", os.getenv("DB_PORT", "5432"),
+        "-U", os.getenv("DB_USERNAME"),
+        "-d", os.getenv("DB_NAME"),
     ]
     if compress:
         # Stream dump output and compress

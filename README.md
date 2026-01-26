@@ -137,11 +137,11 @@ class MyEmbedder:
 ## Database Requirements
 
 The worker requires the following environment variables for database connection:
-- `PROJECT_DB_USERNAME`
-- `PROJECT_DB_PASSWORD`
-- `PROJECT_DB_HOST`
-- `PROJECT_DB_PORT`
-- `PROJECT_DB_NAME`
+- `DB_USERNAME`
+- `DB_PASSWORD`
+- `DB_HOST`
+- `DB_PORT`
+- `DB_NAME`
 
 These are typically loaded from a `.env` file in the project root.
 
