@@ -364,7 +364,8 @@ class PDFTextExtractor(FileTextExtractor):
                     doc.close()
         
         except Exception as e:
-            logger.error(f"Error extracting text from PDF {pdf.name}: {e}")
+            file_identifier = pdf.name if 'pdf' in locals() else pdf_filepath
+            logger.error(f"Error extracting text from PDF {file_identifier}: {e}")
             raise e
 
         finally:

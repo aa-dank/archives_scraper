@@ -13,9 +13,18 @@ No CLI parsing or global state - callable from anywhere.
 """
 import os
 import time
+import tempfile
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+
+from text_extraction.extraction_utils import (
+    common_char_replacements,
+    strip_diacritics,
+    normalize_unicode,
+    normalize_whitespace
+)
 
 import numpy as np
 from sqlalchemy import text
@@ -267,7 +276,18 @@ def process_one_file(
                 "ext": ext,
             }
         )
-        extracted_text = extractor(str(file_path))
+        
+        extracted_text = ""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_fp = os.path.join(temp_dir, os.path.basename(str(file_path)))
+            shutil.copyfile(str(file_path), temp_fp)
+            extracted_text = extractor(temp_fp)
+
+        if extracted_text:
+            extracted_text = common_char_replacements(extracted_text)
+            extracted_text = strip_diacritics(extracted_text)
+            extracted_text = normalize_unicode(extracted_text)
+            extracted_text = normalize_whitespace(extracted_text)
         
         # Truncate if needed
         if max_chars and len(extracted_text) > max_chars:
