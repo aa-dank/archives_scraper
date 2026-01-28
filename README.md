@@ -51,7 +51,7 @@ python -m cli --poll-seconds 5.0
 --limit INTEGER           Maximum files per batch [default: 10]
 --poll-seconds FLOAT      Seconds between polls [default: 5.0]
 --extensions TEXT         Comma-separated extensions (e.g., "pdf,txt")
---max-chars INTEGER       Truncate extracted text to N characters
+--max-chars INTEGER       Maximum characters to extract (skip file if exceeded)
 --embed / --no-embed      Enable/disable embedding [default: embed]
 --embedder [minilm]       Embedder model to use [default: minilm]
 --include-failures / --exclude-failures

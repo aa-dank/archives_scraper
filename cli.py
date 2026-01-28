@@ -54,7 +54,7 @@ from worker import run_worker
     "--max-chars",
     type=int,
     envvar="MAX_CHARS",
-    help="Maximum characters to extract (unlimited if not set)",
+    help="Maximum characters to extract. Files exceeding this limit will be recorded as failures and skipped.",
 )
 @click.option(
     "--embed/--no-embed",

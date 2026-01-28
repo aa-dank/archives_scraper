@@ -183,7 +183,6 @@ def process_one_file(
     Process a single file: extract text, embed, and persist results.
     
     Implements proper failure semantics:
-    dry_run: bool = False,
     - No extractor: persist empty FileContent sentinel to prevent requeue
     - Exception: rollback and persist failure marker in new transaction
     
@@ -200,7 +199,7 @@ def process_one_file(
     now_fn : Callable[[], datetime]
         Function returning current UTC datetime (for testing).
     max_chars : int | None
-        If set, truncate extracted text to this length.
+        If set, skip files with extracted text exceeding this length.
     enable_embedding : bool
         Whether to generate embeddings (default True).
     
@@ -289,23 +288,25 @@ def process_one_file(
             extracted_text = normalize_unicode(extracted_text)
             extracted_text = normalize_whitespace(extracted_text)
         
-        # Truncate if needed
+        # Check text length limit
         if max_chars and len(extracted_text) > max_chars:
+            error_msg = f"Extracted text length {len(extracted_text)} exceeds limit {max_chars}"
             logger.warning(
-                f"Truncating extracted text",
+                f"Skipping file due to text length",
                 extra={
                     "file_id": file_record.id,
-                    "original_chars": len(extracted_text),
-                    "max_chars": max_chars,
+                    "chars": len(extracted_text),
+                    "limit": max_chars,
                 }
             )
             
-            # truncate the text by cutting at last newline/space before max_chars
-            truncated = extracted_text[:max_chars]
-            last_break = max(truncated.rfind("\n"), truncated.rfind(" "))
-            if last_break > max_chars * 0.8:
-                truncated = truncated[:last_break]
-            extracted_text = truncated
+            if not dry_run:
+                _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
+            
+            result["status"] = "error" 
+            result["chars"] = len(extracted_text)
+            result["duration_ms"] = int((time.time() - start_time) * 1000)
+            return result
         
         result["chars"] = len(extracted_text)
         
@@ -514,7 +515,7 @@ def run_worker(
     extensions : set[str] | None
         If provided, only process files with these extensions.
     max_chars : int | None
-        If set, truncate extracted text to this length.
+        If set, skip files with extracted text exceeding this length.
     backoff_seconds : float, default=30.0
         Seconds to sleep when no work found before next poll.
     enable_embedding : bool, default=True
