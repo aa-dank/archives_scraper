@@ -489,7 +489,7 @@ def run_worker(
     limit: int | None = None,
     extensions: set[str] | None = None,
     max_chars: int | None = None,
-    backoff_seconds: float = 30.0,
+    backoff_seconds: float = 60 * 60, #one hour
     enable_embedding: bool = True,
     include_failures: bool = False,
 ) -> int:
