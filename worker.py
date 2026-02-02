@@ -388,17 +388,18 @@ def process_one_file(
             }
         )
         
-        # Record failure in new transaction
-        try:
-            _upsert_failure(session, file_record.hash, current_stage, str(e)[:500], now_fn)
-        except Exception as persist_error:
-            logger.error(
-                f"Failed to record failure",
-                extra={
-                    "file_id": file_record.id,
-                    "error": str(persist_error),
-                }
-            )
+        # Record failure in new transaction (unless dry_run)
+        if not dry_run:
+            try:
+                _upsert_failure(session, file_record.hash, current_stage, str(e)[:500], now_fn)
+            except Exception as persist_error:
+                logger.error(
+                    f"Failed to record failure",
+                    extra={
+                        "file_id": file_record.id,
+                        "error": str(persist_error),
+                    }
+                )
         
         result["status"] = "error"
         result["duration_ms"] = int((time.time() - start_time) * 1000)
@@ -485,11 +486,10 @@ def run_worker(
     extractors: list,
     embedder: Any,
     poll_seconds: float = 5.0,
-    once: bool = False,
     limit: int | None = None,
     extensions: set[str] | None = None,
     max_chars: int | None = None,
-    backoff_seconds: float = 60 * 60, #one hour
+    backoff_seconds: float | None = None,
     enable_embedding: bool = True,
     include_failures: bool = False,
 ) -> int:
@@ -508,16 +508,15 @@ def run_worker(
         Embedder instance.
     poll_seconds : float, default=5.0
         Seconds to sleep between polling when no work found.
-    once : bool, default=False
-        If True, exit after one pass regardless of results.
     limit : int | None
-        Maximum files to process per batch.
+        Total files to process before exiting. If None, run continuously.
     extensions : set[str] | None
         If provided, only process files with these extensions.
     max_chars : int | None
         If set, skip files with extracted text exceeding this length.
-    backoff_seconds : float, default=30.0
-        Seconds to sleep when no work found before next poll.
+    backoff_seconds : float | None, default=None
+        Seconds to sleep when no work is found before next poll. If None,
+        uses poll_seconds.
     enable_embedding : bool, default=True
         Whether to generate embeddings.
     include_failures : bool, default=False
@@ -554,7 +553,6 @@ def run_worker(
     logger.info(
         f"Worker starting",
         extra={
-            "once": once,
             "poll_seconds": poll_seconds,
             "limit": limit,
             "extensions": list(extensions) if extensions else None,
@@ -563,13 +561,24 @@ def run_worker(
         }
     )
     
-    batch_limit = limit or 10
+    default_batch_size = 10
     total_processed = 0
+
+    idle_sleep_seconds = poll_seconds if backoff_seconds is None else backoff_seconds
     
     try:
         while True:
             with session_factory() as session:
                 # Fetch next batch
+                remaining = None
+                if limit is not None:
+                    remaining = max(limit - total_processed, 0)
+                batch_limit = default_batch_size if remaining is None else min(default_batch_size, remaining)
+
+                if batch_limit == 0:
+                    logger.info(f"Reached limit, processed {total_processed} files")
+                    return 0
+
                 files = next_files_needing_content(
                     session,
                     extensions=extensions,
@@ -579,12 +588,12 @@ def run_worker(
                 
                 if not files:
                     logger.info("No files needing processing")
-                    if once:
-                        logger.info(f"Exiting after processing {total_processed} files (once mode)")
+                    if limit is not None:
+                        logger.info(f"Exiting after processing {total_processed} files (limit reached or no work)")
                         return 0
                     
-                    logger.debug(f"Sleeping {backoff_seconds}s before next poll")
-                    time.sleep(backoff_seconds)
+                    logger.debug(f"Sleeping {idle_sleep_seconds}s before next poll")
+                    time.sleep(idle_sleep_seconds)
                     continue
                 
                 logger.info(f"Processing batch of {len(files)} files")
@@ -614,8 +623,8 @@ def run_worker(
                     }
                 )
                 
-                if once:
-                    logger.info(f"Exiting after processing {total_processed} files (once mode)")
+                if limit is not None and total_processed >= limit:
+                    logger.info(f"Reached limit, processed {total_processed} files")
                     return 0
                 
                 # Brief sleep before next batch

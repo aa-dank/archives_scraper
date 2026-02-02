@@ -21,20 +21,17 @@ from text_extraction.pdf_extraction import PDFTextExtractor
 from worker import run_worker
 
 
+# Load environment variables early so Click options using envvar=... can
+# see values from a local .env file.
+load_dotenv()
+
+
 @click.command()
-@click.option(
-    "--once",
-    is_flag=True,
-    envvar="ONCE",
-    help="Process one batch then exit",
-)
 @click.option(
     "--limit",
     type=int,
-    default=10,
     envvar="LIMIT",
-    show_default=True,
-    help="Maximum files to process per batch",
+    help="Total files to process before exiting. If omitted, run continuously.",
 )
 @click.option(
     "--poll-seconds",
@@ -106,8 +103,7 @@ from worker import run_worker
     help="Perform dry run without persisting changes",
 )
 def main(
-    once: bool,
-    limit: int,
+    limit: int | None,
     poll_seconds: float,
     extensions: str | None,
     max_chars: int | None,
@@ -123,11 +119,8 @@ def main(
     File extraction and embedding worker.
     
     Processes files from the database, extracts text, generates embeddings,
-    and persists results. Supports both one-shot and continuous polling modes.
+    and persists results. Runs continuously unless a limit is provided.
     """
-    # Load environment variables
-    load_dotenv()
-    
     # Configure logging first
     configure_logging(
         level=log_level,
@@ -185,7 +178,6 @@ def main(
             extractors=extractors,
             embedder=embedder_instance,
             poll_seconds=poll_seconds,
-            once=once,
             limit=limit,
             extensions=ext_set,
             max_chars=max_chars,

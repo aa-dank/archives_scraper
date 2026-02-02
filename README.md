@@ -34,9 +34,9 @@ Click-based CLI wrapper around `run_worker()`.
 
 ### Basic Usage
 
-Process files once and exit:
+Process a fixed number of files and exit:
 ```bash
-python -m cli --once --limit 10
+python -m cli --limit 10
 ```
 
 Run continuously with polling:
@@ -47,19 +47,18 @@ python -m cli --poll-seconds 5.0
 ### Command-Line Options
 
 ```
---once                    Process one batch then exit
---limit INTEGER           Maximum files per batch [default: 10]
---poll-seconds FLOAT      Seconds between polls [default: 5.0]
+--limit INTEGER           Total files to process before exiting (omit for continuous mode)
+--poll-seconds FLOAT      Seconds between polls/idle checks [default: 5.0]
 --extensions TEXT         Comma-separated extensions (e.g., "pdf,txt")
---max-chars INTEGER       Maximum characters to extract (skip file if exceeded)
+--max-chars INTEGER       Maximum characters to extract. Files exceeding this limit will be recorded as failures and skipped.
 --embed / --no-embed      Enable/disable embedding [default: embed]
 --embedder [minilm]       Embedder model to use [default: minilm]
 --include-failures / --exclude-failures
                           Include/exclude previously failed files [default: exclude]
---log-level [debug|info|warning|error]  Logging level [default: INFO]
+--log-level [DEBUG|INFO|WARNING|ERROR]  Logging level (case-insensitive) [default: INFO]
 --log-file PATH           Path to log file
 --json-logs               Output logs in JSON format
---dry-run                 Dry run mode (not yet implemented)
+--dry-run                 Perform a dry run without persisting DB changes
 ```
 
 ### Environment Variables
@@ -67,22 +66,28 @@ python -m cli --poll-seconds 5.0
 All major options can be set via environment variables:
 
 ```bash
-export ONCE=true
 export LIMIT=50
 export POLL_SECONDS=10.0
 export EXTENSIONS="pdf,txt,md"
+export MAX_CHARS=200000
 export LOG_LEVEL=DEBUG
 export LOG_FILE=/var/log/worker.log
 export JSON_LOGS=true
 export ENABLE_EMBEDDING=false
+export EMBEDDER=minilm
 export INCLUDE_FAILURES=false
+export FILE_SERVER_MOUNT=/mnt/n/PPDO/Records
 ```
+
+Notes:
+- The CLI loads variables from a local `.env` file (via `python-dotenv`) so the above env vars can be stored there.
+- `FILE_SERVER_MOUNT` is required so the worker can resolve the server-relative paths stored in `file_locations.file_server_directories`.
 
 ### Examples
 
 **Extract PDFs only, with debug logging:**
 ```bash
-python -m cli --extensions pdf --log-level debug --once
+python -m cli --extensions pdf --log-level debug --limit 10
 ```
 
 **Continuous mode with file logging:**
@@ -97,7 +102,6 @@ python -m cli --no-embed --extensions "txt,md,log"
 
 **AWS/Production mode with environment variables:**
 ```bash
-export ONCE=true
 export LIMIT=100
 export LOG_LEVEL=INFO
 export LOG_FILE=/var/log/extraction-worker.log
@@ -145,6 +149,12 @@ The worker requires the following environment variables for database connection:
 
 These are typically loaded from a `.env` file in the project root.
 
+## Supported File Types
+
+Out of the box, the CLI registers:
+- `PDFTextExtractor` for `pdf` (with OCR fallback via `ocrmypdf`)
+- `TextFileTextExtractor` for common text formats: `txt`, `md`, `log`, `csv`, `json`, `xml`, `yaml`/`yml`, `ini`, `cfg`, `conf`
+
 ## Logging Conventions
 
 Use structured logging with context:
@@ -187,7 +197,7 @@ CREATE TABLE file_content_failures (
 
 **Retry example:**
 ```bash
-python -m cli --include-failures --once --limit 50
+python -m cli --include-failures --limit 50
 ```
 
 ## Migration from Old System
