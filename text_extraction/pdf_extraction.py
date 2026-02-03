@@ -220,7 +220,7 @@ class PDFTextExtractor(FileTextExtractor):
         self.max_stream_size = 100 * 1024 * 1024
     
     @staticmethod
-    def extract_text_with_ocr(pdf_path: Union[str, Path], ocr_params: dict) -> str:
+    def extract_text_with_ocr(pdf_path: Union[str, Path], ocr_params: dict, chunk_size: int = 0) -> str:
         """
         Perform OCR on a PDF file and return the extracted text.
         
@@ -228,12 +228,19 @@ class PDFTextExtractor(FileTextExtractor):
         such as scanned documents. It creates a new PDF with an OCR text layer
         and then extracts that text.
         
+        When chunk_size > 0, the PDF is processed in chunks of that many pages
+        to reduce peak memory usage. This is useful for large-format documents
+        that would otherwise cause out-of-memory errors during rasterization.
+        
         Parameters
         ----------
         pdf_path : Union[str, Path]
             Path to the PDF file to be processed with OCR.
         ocr_params : dict
             Parameters for the OCR processing.
+        chunk_size : int, optional
+            Number of pages to process at once. If 0 (default), process the
+            entire PDF at once. If > 0, process in chunks to reduce memory usage.
 
         Returns
         -------
@@ -246,23 +253,63 @@ class PDFTextExtractor(FileTextExtractor):
             If the input PDF file does not exist.
         """
         input_pdf_path = Path(pdf_path)
-        logger.debug(f"Starting OCR extraction for {input_pdf_path} with params: {ocr_params}")
+        logger.debug(f"Starting OCR extraction for {input_pdf_path} with params: {ocr_params}, chunk_size: {chunk_size}")
         if not input_pdf_path.exists():
             raise FileNotFoundError(f"Input PDF file not found for OCR operation: {input_pdf_path}")
         
-        with tempfile.TemporaryDirectory(prefix="ocr_") as td:
-            # staging location is directory containing the input_pdf_path file
-            output_pdf_path = Path(td) / f"{input_pdf_path.stem}_ocr.pdf"
+        # Non-chunked processing (original behavior)
+        if chunk_size <= 0:
+            with tempfile.TemporaryDirectory(prefix="ocr_") as td:
+                output_pdf_path = Path(td) / f"{input_pdf_path.stem}_ocr.pdf"
 
-            # add input and output file paths to the OCR parameters
-            params = ocr_params.copy()
-            params['input_file'] = pdf_path
-            params['output_file'] = output_pdf_path
-            ocrmypdf.ocr(**params)
-            logger.debug(f"OCR completed, reading text from generated PDF")
+                params = ocr_params.copy()
+                params['input_file'] = pdf_path
+                params['output_file'] = output_pdf_path
+                ocrmypdf.ocr(**params)
+                logger.debug(f"OCR completed, reading text from generated PDF")
 
-            with fitz.open(output_pdf_path) as doc:
-                return "".join(page.get_text() for page in doc)
+                with fitz.open(output_pdf_path) as doc:
+                    return "".join(page.get_text() for page in doc)
+        
+        # Chunked processing to reduce peak memory usage
+        logger.info(f"Processing PDF in chunks of {chunk_size} pages to reduce memory usage")
+        all_text = []
+        
+        with fitz.open(input_pdf_path) as src_doc:
+            total_pages = src_doc.page_count
+            
+            for start_page in range(0, total_pages, chunk_size):
+                end_page = min(start_page + chunk_size, total_pages)
+                logger.debug(f"Processing pages {start_page + 1}-{end_page} of {total_pages}")
+                
+                with tempfile.TemporaryDirectory(prefix="ocr_chunk_") as td:
+                    td_path = Path(td)
+                    chunk_input = td_path / "chunk_input.pdf"
+                    chunk_output = td_path / "chunk_output.pdf"
+                    
+                    # Extract page range to new PDF
+                    with fitz.open() as chunk_doc:
+                        chunk_doc.insert_pdf(src_doc, from_page=start_page, to_page=end_page - 1)
+                        chunk_doc.save(chunk_input)
+                    
+                    # OCR the chunk
+                    params = ocr_params.copy()
+                    params['input_file'] = chunk_input
+                    params['output_file'] = chunk_output
+                    
+                    try:
+                        ocrmypdf.ocr(**params)
+                        
+                        with fitz.open(chunk_output) as ocr_doc:
+                            for page in ocr_doc:
+                                all_text.append(page.get_text())
+                        logger.debug(f"Successfully processed pages {start_page + 1}-{end_page}")
+                    except Exception as e:
+                        logger.warning(f"OCR failed for pages {start_page + 1}-{end_page}: {e}")
+                        # Continue with other chunks rather than failing entirely
+                        continue
+        
+        return "".join(all_text)
     
     def _fitz_doc_text(self, fitz_doc: fitz.Document, pdf_document: PDFFile) -> str:
         """
@@ -291,7 +338,7 @@ class PDFTextExtractor(FileTextExtractor):
             logger.debug(f"Extracted text length {len(pdf_text)}.")
             return pdf_text
         
-        logger.info(f"OCR needed for document: {pdf_document.path}")
+        logger.info(f"OCR needed for document: {pdf_document.name}")
         ocr_params = self.ocr_params.copy()
         # if no timeout param in ocr_params, set a default based on page count
         if not ocr_params.get('tesseract_timeout', None):
@@ -301,7 +348,14 @@ class PDFTextExtractor(FileTextExtractor):
         if not ocr_params.get('max_image_mpixels', None):
             ocr_params['max_image_mpixels'] = 1000 if pdf_document.has_large_format else 300
 
-        pdf_text = self.extract_text_with_ocr(pdf_path=pdf_document.path, ocr_params=ocr_params)
+        # set chunk_size for large-format documents
+        chunk_size = 0
+        if pdf_document.has_large_format or pdf_document.page_count > 20:
+            chunk_size = 1 if pdf_document.has_large_format else 5
+
+        pdf_text = self.extract_text_with_ocr(pdf_path=pdf_document.path,
+                                              ocr_params=ocr_params,
+                                              chunk_size=chunk_size)
         return pdf_text
 
     def __call__(self, pdf_filepath: str) -> str:
