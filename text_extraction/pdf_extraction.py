@@ -347,6 +347,10 @@ class PDFTextExtractor(FileTextExtractor):
         # set the max_image_mpixels if not in ocr_params
         if not ocr_params.get('max_image_mpixels', None):
             ocr_params['max_image_mpixels'] = 1000 if pdf_document.has_large_format else 300
+        
+        # reduce dpi for large-format documents to reduce memory usage, unless already set in ocr_params
+        if not ocr_params.get('oversample', None) and pdf_document.has_large_format:
+            ocr_params['oversample'] = 200
 
         # set chunk_size for large-format documents
         chunk_size = 0
