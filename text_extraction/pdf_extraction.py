@@ -14,6 +14,12 @@ from .extraction_utils import validate_file
 
 logger = logging.getLogger(__name__)
 
+OCR_RASTER_MEM_BUDGET_MB = int(os.getenv("OCR_RASTER_MEM_BUDGET_MB", "768"))
+OCR_RASTER_OVERHEAD = 3.0
+OCR_DPI_MIN = 72
+OCR_DPI_MAX = 300
+OCR_MAX_IMAGE_MPIXELS_LARGE_FORMAT = 80
+
 class PDFFile:
     """
     Represents a PDF file and provides properties and utilities
@@ -177,6 +183,20 @@ class PDFFile:
             self.property_cache['has_large_format'] = False
 
         return self.property_cache.get('has_large_format', False)
+
+    def pick_dpi_for_ocr(self, budget_mb: int) -> int:
+        # choose worst-case page by area (inches)
+        w, h = max(self.pages_dims, key=lambda wh: wh[0] * wh[1])
+
+        budget_bytes = budget_mb * 1024 * 1024
+        bytes_per_pixel = 3  # RGB
+        area = w * h
+        if area <= 0:
+            return OCR_DPI_MAX
+
+        dpi = int((budget_bytes / (area * bytes_per_pixel * OCR_RASTER_OVERHEAD)) ** 0.5)
+        dpi = max(OCR_DPI_MIN, min(OCR_DPI_MAX, dpi))
+        return dpi
     
 
 class PDFTextExtractor(FileTextExtractor):
@@ -344,13 +364,21 @@ class PDFTextExtractor(FileTextExtractor):
         if not ocr_params.get('tesseract_timeout', None):
             ocr_params['tesseract_timeout'] = min(300, pdf_document.page_count * 45)
 
-        # set the max_image_mpixels if not in ocr_params
-        if not ocr_params.get('max_image_mpixels', None):
-            ocr_params['max_image_mpixels'] = 1000 if pdf_document.has_large_format else 300
-        
-        # reduce dpi for large-format documents to reduce memory usage, unless already set in ocr_params
-        if not ocr_params.get('oversample', None) and pdf_document.has_large_format:
-            ocr_params['oversample'] = 200
+        dpi = pdf_document.pick_dpi_for_ocr(OCR_RASTER_MEM_BUDGET_MB)
+        if not ocr_params.get('oversample', None):
+            ocr_params['oversample'] = dpi
+
+        if pdf_document.has_large_format and not ocr_params.get('max_image_mpixels', None):
+            ocr_params['max_image_mpixels'] = OCR_MAX_IMAGE_MPIXELS_LARGE_FORMAT
+
+        worst_w, worst_h = max(pdf_document.pages_dims, key=lambda wh: wh[0] * wh[1])
+        logger.info(
+            "OCR raster selection: worst_page=%.2fx%.2f in, dpi=%d, budget_mb=%d",
+            worst_w,
+            worst_h,
+            dpi,
+            OCR_RASTER_MEM_BUDGET_MB,
+        )
 
         # set chunk_size for large-format documents
         chunk_size = 0
