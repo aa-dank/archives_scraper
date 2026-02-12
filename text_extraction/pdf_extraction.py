@@ -406,6 +406,13 @@ class PDFTextExtractor(FileTextExtractor):
         
         logger.info(f"OCR needed for document: {pdf_document.name}")
         ocr_params = self.ocr_params.copy()
+
+        # Large-format pages can trigger expensive rasterization paths when doing
+        # rotation/deskew. Prefer leaving pages as-is for these documents.
+        if pdf_document.has_large_format:
+            ocr_params["rotate_pages"] = False
+            ocr_params["deskew"] = False
+
         # if no timeout param in ocr_params, set a default based on page count
         if not ocr_params.get('tesseract_timeout', None):
             ocr_params['tesseract_timeout'] = min(300, pdf_document.page_count * 45)
