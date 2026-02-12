@@ -27,6 +27,7 @@ OCR_RASTER_OVERHEAD = 3.0
 OCR_DPI_MIN = 72
 OCR_DPI_MAX = 300
 OCR_MAX_IMAGE_MPIXELS_LARGE_FORMAT = 80
+OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "25"))
 
 class PDFFile:
     """
@@ -246,6 +247,10 @@ class PDFTextExtractor(FileTextExtractor):
 
         # threshold of files which cannot be processed in memory, default is 100 MB
         self.max_stream_size = 100 * 1024 * 1024
+
+        # If OCR produces less than this many non-whitespace chars, treat as extraction failure.
+        # (Allows the worker to record file_content_failures instead of silently writing junk/empty content.)
+        self.ocr_min_text_chars = OCR_MIN_TEXT_CHARS
     
     @staticmethod
     def extract_text_with_ocr(pdf_path: Union[str, Path], ocr_params: dict, chunk_size: int = 0) -> str:
@@ -309,13 +314,17 @@ class PDFTextExtractor(FileTextExtractor):
         
         # Chunked processing to reduce peak memory usage
         logger.info(f"Processing PDF in chunks of {chunk_size} pages to reduce memory usage")
-        all_text = []
+        all_text: list[str] = []
+        chunks_attempted = 0
+        chunks_succeeded = 0
+        chunks_failed = 0
         
         with fitz.open(input_pdf_path) as src_doc:
             total_pages = src_doc.page_count
             
             for start_page in range(0, total_pages, chunk_size):
                 end_page = min(start_page + chunk_size, total_pages)
+                chunks_attempted += 1
                 logger.debug(f"Processing pages {start_page + 1}-{end_page} of {total_pages}")
                 
                 with tempfile.TemporaryDirectory(prefix="ocr_chunk_") as td:
@@ -340,8 +349,10 @@ class PDFTextExtractor(FileTextExtractor):
                         with fitz.open(chunk_output) as ocr_doc:
                             for page in ocr_doc:
                                 all_text.append(page.get_text())
+                        chunks_succeeded += 1
                         logger.debug(f"Successfully processed pages {start_page + 1}-{end_page}")
                     except Exception as e:
+                        chunks_failed += 1
                         if is_pil_decompression_bomb(e):
                             logger.error(
                                 "PIL decompression bomb protection triggered during OCR for %s pages %d-%d: %s",
@@ -356,8 +367,15 @@ class PDFTextExtractor(FileTextExtractor):
                         logger.warning(f"OCR failed for pages {start_page + 1}-{end_page}: {e}")
                         # Continue with other chunks rather than failing entirely
                         continue
-        
-        return "".join(all_text)
+
+        combined = "".join(all_text)
+        if not combined.strip():
+            raise TextExtractionError(
+                f"OCR produced no text for {input_pdf_path} (chunk_size={chunk_size}, "
+                f"chunks_attempted={chunks_attempted}, chunks_succeeded={chunks_succeeded}, chunks_failed={chunks_failed})"
+            )
+
+        return combined
     
     def _fitz_doc_text(self, fitz_doc: fitz.Document, pdf_document: PDFFile) -> str:
         """
@@ -416,6 +434,13 @@ class PDFTextExtractor(FileTextExtractor):
         pdf_text = self.extract_text_with_ocr(pdf_path=pdf_document.path,
                                               ocr_params=ocr_params,
                                               chunk_size=chunk_size)
+
+        if len((pdf_text or "").strip()) < self.ocr_min_text_chars:
+            raise TextExtractionError(
+                f"OCR text below threshold for {pdf_document.path} "
+                f"(chars={len((pdf_text or '').strip())}, min={self.ocr_min_text_chars}, "
+                f"pages={pdf_document.page_count}, chunk_size={chunk_size})"
+            )
         return pdf_text
 
     def __call__(self, pdf_filepath: str) -> str:
