@@ -2,6 +2,8 @@
 
 # --- imports ---
 import logging
+import warnings
+from contextlib import contextmanager
 from typing import Optional
 import subprocess
 import tempfile
@@ -199,4 +201,33 @@ def init_tesseract(cmd: Optional[str] = None):
     # Set custom tesseract command if given
     if cmd:
         pytesseract.pytesseract.tesseract_cmd = cmd
+
+
+@contextmanager
+def pil_decompression_bomb_as_error():
+    """Treat `PIL.Image.DecompressionBombWarning` as an exception within the context."""
+    try:
+        from PIL import Image
+
+        bomb_warning = Image.DecompressionBombWarning
+    except Exception:
+        bomb_warning = None
+
+    with warnings.catch_warnings():
+        if bomb_warning is not None:
+            warnings.simplefilter("error", bomb_warning)
+        yield
+
+
+def is_pil_decompression_bomb(exc: BaseException) -> bool:
+    """Return True if the exception is (or looks like) a Pillow decompression-bomb."""
+    try:
+        from PIL import Image
+
+        return isinstance(exc, (Image.DecompressionBombError, Image.DecompressionBombWarning))
+    except Exception:
+        # Fall back to string matching if Pillow isn't importable for some reason.
+        name = exc.__class__.__name__
+        msg = str(exc)
+        return "DecompressionBomb" in name or "decompression bomb" in msg.lower()
 

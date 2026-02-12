@@ -9,8 +9,16 @@ import tempfile
 
 from pathlib import Path
 from typing import Union, List
-from .basic_extraction import FileTextExtractor
-from .extraction_utils import validate_file
+from .basic_extraction import FileTextExtractor, TextExtractionError
+from .extraction_utils import (
+    validate_file,
+    pil_decompression_bomb_as_error,
+    is_pil_decompression_bomb,
+)
+
+
+class DecompressionBombTextExtractionError(TextExtractionError):
+    """Raised when Pillow's decompression bomb protection triggers."""
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +293,15 @@ class PDFTextExtractor(FileTextExtractor):
                 params = ocr_params.copy()
                 params['input_file'] = pdf_path
                 params['output_file'] = output_pdf_path
-                ocrmypdf.ocr(**params)
+                try:
+                    with pil_decompression_bomb_as_error():
+                        ocrmypdf.ocr(**params)
+                except Exception as e:
+                    if is_pil_decompression_bomb(e):
+                        raise DecompressionBombTextExtractionError(
+                            f"PIL decompression bomb protection triggered during OCR for {input_pdf_path}: {e}"
+                        ) from e
+                    raise
                 logger.debug(f"OCR completed, reading text from generated PDF")
 
                 with fitz.open(output_pdf_path) as doc:
@@ -318,13 +334,25 @@ class PDFTextExtractor(FileTextExtractor):
                     params['output_file'] = chunk_output
                     
                     try:
-                        ocrmypdf.ocr(**params)
+                        with pil_decompression_bomb_as_error():
+                            ocrmypdf.ocr(**params)
                         
                         with fitz.open(chunk_output) as ocr_doc:
                             for page in ocr_doc:
                                 all_text.append(page.get_text())
                         logger.debug(f"Successfully processed pages {start_page + 1}-{end_page}")
                     except Exception as e:
+                        if is_pil_decompression_bomb(e):
+                            logger.error(
+                                "PIL decompression bomb protection triggered during OCR for %s pages %d-%d: %s",
+                                input_pdf_path,
+                                start_page + 1,
+                                end_page,
+                                e,
+                            )
+                            raise DecompressionBombTextExtractionError(
+                                f"PIL decompression bomb protection triggered during OCR for {input_pdf_path} pages {start_page + 1}-{end_page}: {e}"
+                            ) from e
                         logger.warning(f"OCR failed for pages {start_page + 1}-{end_page}: {e}")
                         # Continue with other chunks rather than failing entirely
                         continue
@@ -442,7 +470,7 @@ class PDFTextExtractor(FileTextExtractor):
         except Exception as e:
             file_identifier = pdf.name if 'pdf' in locals() else pdf_filepath
             logger.error(f"Error extracting text from PDF {file_identifier}: {e}")
-            raise e
+            raise
 
         finally:
             if doc is not None and not doc.is_closed:

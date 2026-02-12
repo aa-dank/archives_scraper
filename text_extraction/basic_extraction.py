@@ -13,6 +13,10 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
+
+class TextExtractionError(RuntimeError):
+    """Base exception for extraction failures (meant to be recorded by the worker)."""
+
 class FileTextExtractor(ABC):
     """
     Abstract base class for text extraction from different file types.
