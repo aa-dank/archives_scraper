@@ -77,6 +77,43 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def format_failure_error(
+    *,
+    raw_error: str,
+    source_path: Path | None,
+    server_dir: str | None,
+    filename: str | None,
+    temp_path: str | None = None,
+) -> str:
+    """
+    Build a stable, useful failure message for persistence.
+
+    Replaces temp-file paths with source path and appends source location
+    context from file_locations.
+    """
+    message = raw_error or "unknown error"
+
+    if temp_path and source_path:
+        message = message.replace(temp_path, str(source_path))
+
+        temp_dir = os.path.dirname(temp_path)
+        if temp_dir:
+            message = message.replace(temp_dir, str(source_path.parent))
+
+    context_parts = []
+    if source_path:
+        context_parts.append(f"source_path={source_path}")
+    if server_dir:
+        context_parts.append(f"server_dir={server_dir}")
+    if filename:
+        context_parts.append(f"filename={filename}")
+
+    if context_parts:
+        message = f"{message} ({', '.join(context_parts)})"
+
+    return message
+
+
 def build_extractor_registry(extractors: list) -> dict[str, Any]:
     """
     Build a mapping of file extension to extractor.
@@ -226,6 +263,10 @@ def process_one_file(
         "duration_ms": 0,
     }
     current_stage = STAGE_EXTRACT
+    file_path: Path | None = None
+    record_location_directories: str | None = None
+    record_filename: str | None = None
+    temp_fp: str | None = None
     
     try:
         # Determine extension
@@ -252,7 +293,6 @@ def process_one_file(
             return result
         
         # Get file path from first location
-        file_path = None
         if file_record.locations:
             record_location_directories = file_record.locations[0].file_server_directories
             record_filename = file_record.locations[0].filename
@@ -399,7 +439,20 @@ def process_one_file(
         # Record failure in new transaction (unless dry_run)
         if not dry_run:
             try:
-                _upsert_failure(session, file_record.hash, current_stage, str(e)[:500], now_fn)
+                formatted_error = format_failure_error(
+                    raw_error=str(e),
+                    source_path=file_path,
+                    server_dir=record_location_directories,
+                    filename=record_filename,
+                    temp_path=temp_fp,
+                )
+                _upsert_failure(
+                    session,
+                    file_record.hash,
+                    current_stage,
+                    formatted_error[:500],
+                    now_fn,
+                )
             except Exception as persist_error:
                 logger.error(
                     f"Failed to record failure",
