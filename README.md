@@ -55,6 +55,8 @@ python -m cli --poll-seconds 5.0
 --embedder [minilm]       Embedder model to use [default: minilm]
 --include-failures / --exclude-failures
                           Include/exclude previously failed files [default: exclude]
+--randomize / --no-randomize
+                          Randomize database file retrieval order [default: no-randomize]
 --log-level [DEBUG|INFO|WARNING|ERROR]  Logging level (case-insensitive) [default: INFO]
 --log-file PATH           Path to log file
 --json-logs               Output logs in JSON format
@@ -70,6 +72,7 @@ export LIMIT=50
 export POLL_SECONDS=10.0
 export EXTENSIONS="pdf,txt,md"
 export MAX_CHARS=200000
+export RANDOMIZE=true
 export LOG_LEVEL=DEBUG
 export LOG_FILE=/var/log/worker.log
 export JSON_LOGS=true

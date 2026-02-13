@@ -116,6 +116,7 @@ def next_files_needing_content(
     extensions: set[str] | None = None,
     limit: int = 10,
     include_failures: bool = False,
+    randomize: bool = False,
 ) -> list:
     """
     Fetch the next batch of files needing content extraction.
@@ -135,6 +136,8 @@ def next_files_needing_content(
     include_failures : bool, default=False
         If True, include files that have failure records (for retry).
         If False (default), exclude files with any failure record.
+    randomize : bool, default=False
+        If True, randomize file order before applying limit.
     
     Returns
     -------
@@ -161,7 +164,12 @@ def next_files_needing_content(
         # Exclude files that have a failure record
         query = query.filter(FileContentFailure.file_hash.is_(None))
     
-    query = query.order_by(File.id).limit(limit)
+    if randomize:
+        query = query.order_by(func.random())
+    else:
+        query = query.order_by(File.id)
+
+    query = query.limit(limit)
     
     files = query.all()
     logger.debug(f"Fetched {len(files)} files needing content extraction (include_failures={include_failures})")
@@ -492,6 +500,7 @@ def run_worker(
     backoff_seconds: float | None = None,
     enable_embedding: bool = True,
     include_failures: bool = False,
+    randomize: bool = False,
 ) -> int:
     """
     Main worker execution loop.
@@ -522,6 +531,8 @@ def run_worker(
     include_failures : bool, default=False
         If True, include files with failure records for retry.
         If False (default), exclude files that have previously failed.
+    randomize : bool, default=False
+        If True, randomize file retrieval order each batch.
     
     Returns
     -------
@@ -558,6 +569,7 @@ def run_worker(
             "extensions": list(extensions) if extensions else None,
             "enable_embedding": enable_embedding,
             "include_failures": include_failures,
+            "randomize": randomize,
         }
     )
     
@@ -584,6 +596,7 @@ def run_worker(
                     extensions=extensions,
                     limit=batch_limit,
                     include_failures=include_failures,
+                    randomize=randomize,
                 )
                 
                 if not files:

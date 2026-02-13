@@ -98,6 +98,14 @@ load_dotenv()
     help="Include/exclude files with previous failures for retry",
 )
 @click.option(
+    "--randomize/--no-randomize",
+    "randomize",
+    default=False,
+    envvar="RANDOMIZE",
+    show_default=True,
+    help="Randomize database file selection order for scraping",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Perform dry run without persisting changes",
@@ -113,6 +121,7 @@ def main(
     log_file: str | None,
     json_logs: bool,
     include_failures: bool,
+    randomize: bool,
     dry_run: bool,
 ) -> None:
     """
@@ -183,6 +192,7 @@ def main(
             max_chars=max_chars,
             enable_embedding=enable_embedding,
             include_failures=include_failures,
+            randomize=randomize,
             dry_run=dry_run,
         )
         
