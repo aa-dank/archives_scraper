@@ -1,24 +1,18 @@
 # text_extraction/pdf_extractor.py
 
 import fitz
+import json
 import logging
-import ocrmypdf
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 
 from pathlib import Path
-from typing import Union, List
+from typing import Union, List, Optional
 from .basic_extraction import FileTextExtractor, TextExtractionError
-from .extraction_utils import (
-    validate_file,
-    pil_decompression_bomb_as_error,
-    is_pil_decompression_bomb,
-)
-
-
-class DecompressionBombTextExtractionError(TextExtractionError):
-    """Raised when Pillow's decompression bomb protection triggers."""
+from .extraction_utils import validate_file
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +22,10 @@ OCR_DPI_MIN = 72
 OCR_DPI_MAX = 300
 OCR_MAX_IMAGE_MPIXELS_LARGE_FORMAT = 80
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "25"))
+OCR_SUBPROCESS_TIMEOUT_S = int(os.getenv("OCR_SUBPROCESS_TIMEOUT_S", "600"))
+_OCR_SUBPROCESS_MEM_MB_RAW = os.getenv("OCR_SUBPROCESS_MEM_MB")
+OCR_SUBPROCESS_MEM_MB = int(_OCR_SUBPROCESS_MEM_MB_RAW) if _OCR_SUBPROCESS_MEM_MB_RAW else None
+OCR_SUBPROCESS_STDERR_MAX_BYTES = 8192
 
 class PDFFile:
     """
@@ -247,10 +245,96 @@ class PDFTextExtractor(FileTextExtractor):
 
         # threshold of files which cannot be processed in memory, default is 100 MB
         self.max_stream_size = 100 * 1024 * 1024
-
         # If OCR produces less than this many non-whitespace chars, treat as extraction failure.
         # (Allows the worker to record file_content_failures instead of silently writing junk/empty content.)
         self.ocr_min_text_chars = OCR_MIN_TEXT_CHARS
+
+    @staticmethod
+    def _read_stderr_snippet(stderr_file, max_bytes: int = OCR_SUBPROCESS_STDERR_MAX_BYTES) -> str:
+        stderr_file.flush()
+        stderr_file.seek(0)
+        stderr_bytes = stderr_file.read(max_bytes + 1)
+        if not stderr_bytes:
+            return ""
+
+        is_truncated = len(stderr_bytes) > max_bytes
+        snippet = stderr_bytes[:max_bytes].decode("utf-8", errors="replace").strip()
+        if is_truncated:
+            return f"{snippet}...[truncated]"
+        return snippet
+
+    @staticmethod
+    def _run_ocr_subprocess(
+        input_pdf_path: Union[str, Path],
+        output_pdf_path: Union[str, Path],
+        ocr_params: dict,
+        file_identifier: str,
+        chunk_page_range: str,
+        timeout_s: int = OCR_SUBPROCESS_TIMEOUT_S,
+        mem_mb: Optional[int] = OCR_SUBPROCESS_MEM_MB,
+    ) -> None:
+        params_json = json.dumps(ocr_params)
+        cmd = [
+            sys.executable,
+            "-m",
+            "text_extraction.pdf_extraction_worker",
+            "--input",
+            str(input_pdf_path),
+            "--output",
+            str(output_pdf_path),
+            "--params-json",
+            params_json,
+        ]
+
+        if mem_mb is not None:
+            cmd.extend(["--mem-mb", str(mem_mb)])
+
+        logger.info(
+            "OCR subprocess invoke: file=%s page_range=%s timeout_s=%s mem_mb=%s",
+            file_identifier,
+            chunk_page_range,
+            timeout_s,
+            mem_mb if mem_mb is not None else "unset",
+        )
+
+        with tempfile.NamedTemporaryFile(prefix="ocr_subprocess_stderr_", suffix=".log") as stderr_file:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_file,
+                    timeout=timeout_s,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                stderr_snippet = PDFTextExtractor._read_stderr_snippet(stderr_file)
+                logger.error(
+                    "OCR subprocess timed out: file=%s page_range=%s timeout_s=%s stderr=%s",
+                    file_identifier,
+                    chunk_page_range,
+                    timeout_s,
+                    stderr_snippet,
+                )
+                raise RuntimeError("OCR subprocess timed out")
+
+            if result.returncode == 0:
+                return
+
+            stderr_snippet = PDFTextExtractor._read_stderr_snippet(stderr_file)
+            logger.error(
+                "OCR subprocess failed: file=%s page_range=%s returncode=%s stderr=%s",
+                file_identifier,
+                chunk_page_range,
+                result.returncode,
+                stderr_snippet,
+            )
+
+            if result.returncode == -9:
+                raise RuntimeError("OCR subprocess killed (likely OOM)")
+
+            raise RuntimeError(
+                f"OCR subprocess failed (returncode={result.returncode}): {stderr_snippet}"
+            )
     
     @staticmethod
     def extract_text_with_ocr(pdf_path: Union[str, Path], ocr_params: dict, chunk_size: int = 0) -> str:
@@ -296,17 +380,15 @@ class PDFTextExtractor(FileTextExtractor):
                 output_pdf_path = Path(td) / f"{input_pdf_path.stem}_ocr.pdf"
 
                 params = ocr_params.copy()
-                params['input_file'] = pdf_path
-                params['output_file'] = output_pdf_path
-                try:
-                    with pil_decompression_bomb_as_error():
-                        ocrmypdf.ocr(**params)
-                except Exception as e:
-                    if is_pil_decompression_bomb(e):
-                        raise DecompressionBombTextExtractionError(
-                            f"PIL decompression bomb protection triggered during OCR for {input_pdf_path}: {e}"
-                        ) from e
-                    raise
+                params.pop('input_file', None)
+                params.pop('output_file', None)
+                PDFTextExtractor._run_ocr_subprocess(
+                    input_pdf_path=input_pdf_path,
+                    output_pdf_path=output_pdf_path,
+                    ocr_params=params,
+                    file_identifier=input_pdf_path.name,
+                    chunk_page_range="full-document",
+                )
                 logger.debug(f"OCR completed, reading text from generated PDF")
 
                 with fitz.open(output_pdf_path) as doc:
@@ -339,13 +421,18 @@ class PDFTextExtractor(FileTextExtractor):
                     
                     # OCR the chunk
                     params = ocr_params.copy()
-                    params['input_file'] = chunk_input
-                    params['output_file'] = chunk_output
+                    params.pop('input_file', None)
+                    params.pop('output_file', None)
                     
                     try:
-                        with pil_decompression_bomb_as_error():
-                            ocrmypdf.ocr(**params)
-                        
+                        PDFTextExtractor._run_ocr_subprocess(
+                            input_pdf_path=chunk_input,
+                            output_pdf_path=chunk_output,
+                            ocr_params=params,
+                            file_identifier=input_pdf_path.name,
+                            chunk_page_range=f"{start_page + 1}-{end_page}",
+                        )
+
                         with fitz.open(chunk_output) as ocr_doc:
                             for page in ocr_doc:
                                 all_text.append(page.get_text())
@@ -353,19 +440,7 @@ class PDFTextExtractor(FileTextExtractor):
                         logger.debug(f"Successfully processed pages {start_page + 1}-{end_page}")
                     except Exception as e:
                         chunks_failed += 1
-                        if is_pil_decompression_bomb(e):
-                            logger.error(
-                                "PIL decompression bomb protection triggered during OCR for %s pages %d-%d: %s",
-                                input_pdf_path,
-                                start_page + 1,
-                                end_page,
-                                e,
-                            )
-                            raise DecompressionBombTextExtractionError(
-                                f"PIL decompression bomb protection triggered during OCR for {input_pdf_path} pages {start_page + 1}-{end_page}: {e}"
-                            ) from e
                         logger.warning(f"OCR failed for pages {start_page + 1}-{end_page}: {e}")
-                        # Continue with other chunks rather than failing entirely
                         continue
 
         combined = "".join(all_text)

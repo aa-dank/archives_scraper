@@ -83,7 +83,8 @@ text_extractor_*/
 models/
 .cache/
 
-# development folder
+# development folders
+.github/
 development/
 
 # env files
