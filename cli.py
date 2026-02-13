@@ -17,7 +17,9 @@ from sqlalchemy.orm import sessionmaker
 from db.db import get_db_engine
 from logging_configuration import configure_logging, get_logger
 from text_extraction.basic_extraction import TextFileTextExtractor
+from text_extraction.image_extraction import ImageTextExtractor
 from text_extraction.pdf_extraction import PDFTextExtractor
+from text_extraction.web_extraction import EmailTextExtractor, HtmlTextExtractor
 from worker import run_worker
 
 
@@ -154,6 +156,9 @@ def main(
     # Build extractors
     extractors = [
         PDFTextExtractor(),
+        ImageTextExtractor(),
+        HtmlTextExtractor(),
+        EmailTextExtractor(),
         TextFileTextExtractor(),
     ]
     logger.info(f"Initialized {len(extractors)} extractors")

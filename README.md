@@ -156,6 +156,9 @@ These are typically loaded from a `.env` file in the project root.
 
 Out of the box, the CLI registers:
 - `PDFTextExtractor` for `pdf` (with OCR fallback via `ocrmypdf`)
+- `ImageTextExtractor` for image OCR: `png`, `jpg`/`jpeg`, `tif`/`tiff`, `bmp`, `gif`
+- `HtmlTextExtractor` for web documents: `html`, `htm`, `mhtml`, `mht`
+- `EmailTextExtractor` for email files: `eml`, `msg`
 - `TextFileTextExtractor` for common text formats: `txt`, `md`, `log`, `csv`, `json`, `xml`, `yaml`/`yml`, `ini`, `cfg`, `conf`
 
 ## Logging Conventions
