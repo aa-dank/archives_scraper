@@ -1,13 +1,24 @@
-# text_extraction/image_extractor.py
+# text_extraction/image_extraction.py
 import logging
+import json
+import os
 import pytesseract
 import re
-from typing import List
+import subprocess
+import sys
+from typing import List, Tuple
 from pathlib import Path
 from PIL import Image, ImageOps, ImageSequence
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+IMAGE_OCR_PIXEL_THRESHOLD = 30_000_000
+IMAGE_OCR_FILESIZE_THRESHOLD_BYTES = 50 * 1024 * 1024
+IMAGE_OCR_SUBPROCESS_TIMEOUT_S = int(os.getenv("IMAGE_OCR_SUBPROCESS_TIMEOUT_S", "300"))
+_IMAGE_OCR_SUBPROCESS_MEM_MB_RAW = os.getenv("IMAGE_OCR_SUBPROCESS_MEM_MB")
+IMAGE_OCR_SUBPROCESS_MEM_MB = int(_IMAGE_OCR_SUBPROCESS_MEM_MB_RAW) if _IMAGE_OCR_SUBPROCESS_MEM_MB_RAW else None
+IMAGE_OCR_SUBPROCESS_STDERR_MAX_BYTES = 8192
 
 try:
     import cv2  # optional for better preprocessing
@@ -59,6 +70,7 @@ class ImageTextExtractor(FileTextExtractor):
         super().__init__()
         if tesseract_cmd:
             pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        self.tesseract_cmd = tesseract_cmd
         self.lang = lang
         self.psm = psm
         self.oem = oem
@@ -71,6 +83,33 @@ class ImageTextExtractor(FileTextExtractor):
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(path)
+
+        file_size = p.stat().st_size
+        width, height, frame_count = self._inspect_image(path=p)
+        pixel_count = width * height
+
+        should_use_subprocess = (
+            frame_count > 1
+            or pixel_count > IMAGE_OCR_PIXEL_THRESHOLD
+            or file_size > IMAGE_OCR_FILESIZE_THRESHOLD_BYTES
+        )
+
+        if should_use_subprocess:
+            logger.info(
+                "Using image OCR subprocess: path=%s frame_count=%s pixels=%s file_size=%s",
+                p,
+                frame_count,
+                pixel_count,
+                file_size,
+            )
+            return self._run_ocr_subprocess(path=p, worker_config=self._worker_config())
+
+        return self._extract_in_process(path=p)
+
+    def _extract_in_process(self, path: Path | str) -> str:
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(str(path))
 
         images = self._load_images(p)
         logger.debug(f"Loaded {len(images)} image frames for OCR")
@@ -93,6 +132,102 @@ class ImageTextExtractor(FileTextExtractor):
             texts.append(txt)
 
         return "\n".join(texts)
+
+    @staticmethod
+    def _inspect_image(path: Path) -> Tuple[int, int, int]:
+        with Image.open(path) as im:
+            width, height = im.size
+            frame_count = 0
+            try:
+                for _ in ImageSequence.Iterator(im):
+                    frame_count += 1
+                    if frame_count > 1:
+                        break
+            except Exception:
+                frame_count = 1
+
+        if frame_count == 0:
+            frame_count = 1
+        return width, height, frame_count
+
+    @staticmethod
+    def _read_stderr_snippet(stderr_text: str, max_bytes: int = IMAGE_OCR_SUBPROCESS_STDERR_MAX_BYTES) -> str:
+        if not stderr_text:
+            return ""
+
+        stderr_bytes = stderr_text.encode("utf-8", errors="replace")
+        is_truncated = len(stderr_bytes) > max_bytes
+        snippet = stderr_bytes[:max_bytes].decode("utf-8", errors="replace").strip()
+        if is_truncated:
+            return f"{snippet}...[truncated]"
+        return snippet
+
+    @staticmethod
+    def _run_ocr_subprocess(
+        path: Path,
+        worker_config: dict,
+        timeout_s: int = IMAGE_OCR_SUBPROCESS_TIMEOUT_S,
+        mem_mb: int | None = IMAGE_OCR_SUBPROCESS_MEM_MB,
+    ) -> str:
+        cmd = [
+            sys.executable,
+            "-m",
+            "text_extraction.image_extraction_worker",
+            "--input",
+            str(path),
+            "--config-json",
+            json.dumps(worker_config),
+        ]
+
+        if mem_mb is not None:
+            cmd.extend(["--mem-mb", str(mem_mb)])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr_snippet = ImageTextExtractor._read_stderr_snippet(exc.stderr or "")
+            logger.error(
+                "Image OCR subprocess timed out: path=%s timeout_s=%s stderr=%s",
+                path,
+                timeout_s,
+                stderr_snippet,
+            )
+            raise RuntimeError("image ocr subprocess timed out")
+
+        if result.returncode == 0:
+            return result.stdout
+
+        stderr_snippet = ImageTextExtractor._read_stderr_snippet(result.stderr)
+        logger.error(
+            "Image OCR subprocess failed: path=%s returncode=%s stderr=%s",
+            path,
+            result.returncode,
+            stderr_snippet,
+        )
+
+        if result.returncode == -9:
+            raise RuntimeError("image ocr subprocess killed (likely OOM)")
+
+        raise RuntimeError(
+            f"image ocr subprocess failed (returncode={result.returncode}): {stderr_snippet}"
+        )
+
+    def _worker_config(self) -> dict:
+        return {
+            "lang": self.lang,
+            "psm": self.psm,
+            "oem": self.oem,
+            "preprocess": self.preprocess,
+            "max_side": self.max_side,
+            "default_image_dpi": self.default_image_dpi,
+            "tesseract_cmd": self.tesseract_cmd,
+        }
 
     # ---------- helpers ----------
     def _load_images(self, path: Path) -> List[Image.Image]:
