@@ -84,11 +84,10 @@ class ImageTextExtractor(FileTextExtractor):
                 img = self._preprocess(img)
                 logger.debug("Applied preprocessing to image")
 
-            cfg = f"--psm {self.psm} --oem {self.oem}"
             txt = pytesseract.image_to_string(
                 image=img,
                 lang=self.lang,
-                config=config_str(cfg)
+                config=config_str(f"--psm {self.psm}", f"--oem {self.oem}")
                 )
             logger.debug(f"Extracted text length: {len(txt)} characters")
             texts.append(txt)
@@ -177,10 +176,10 @@ class ImageTextExtractor(FileTextExtractor):
         """
         Inject DPI into the image metadata if not present.
         """
-        dpi = pil_img.info.get("dpi", (0,0))[0]
-        if dpi == 0:
-            logger.debug(f"Injecting default DPI {self.default_image_dpi} into image")
-            pil_img.info["dpi"] = (self.default_image_dpi, self.default_image_dpi)
+        existing = pil_img.info.get("dpi", (0,0))[0]
+        if not existing:
+            logger.debug(f"Injecting default DPI {dpi} into image")
+            pil_img.info["dpi"] = (dpi, dpi)
         return pil_img
 
 

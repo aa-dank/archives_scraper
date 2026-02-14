@@ -395,7 +395,6 @@ class PDFTextExtractor(FileTextExtractor):
                     return "".join(page.get_text() for page in doc)
         
         # Chunked processing to reduce peak memory usage
-        logger.info(f"Processing PDF in chunks of {chunk_size} pages to reduce memory usage")
         all_text: list[str] = []
         chunks_attempted = 0
         chunks_succeeded = 0
@@ -512,6 +511,7 @@ class PDFTextExtractor(FileTextExtractor):
         chunk_size = 0
         if pdf_document.has_large_format or pdf_document.page_count > 20:
             chunk_size = 1 if pdf_document.has_large_format else 5
+            logger.info(f"Processing PDF in chunks of {chunk_size} pages to reduce memory usage")
 
         pdf_text = self.extract_text_with_ocr(pdf_path=pdf_document.path,
                                               ocr_params=ocr_params,
