@@ -2,9 +2,11 @@
 
 # --- imports ---
 import logging
+import re
+import sys
 import warnings
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, Tuple
 import subprocess
 import tempfile
 import unicodedata
@@ -230,4 +232,120 @@ def is_pil_decompression_bomb(exc: BaseException) -> bool:
         name = exc.__class__.__name__
         msg = str(exc)
         return "DecompressionBomb" in name or "decompression bomb" in msg.lower()
+
+
+class SubprocessUtils:
+    """Helpers for subprocess workers and process-level limits."""
+
+    @staticmethod
+    def apply_memory_limit(mem_mb: Optional[int], stderr=None) -> None:
+        """Apply a Linux address-space memory limit (best-effort)."""
+        if mem_mb is None:
+            return
+
+        err_stream = stderr if stderr is not None else sys.stderr
+
+        if not sys.platform.startswith("linux"):
+            print("warning: --mem-mb is only supported on Linux; ignoring", file=err_stream)
+            return
+
+        try:
+            import resource
+
+            limit_bytes = mem_mb * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+        except Exception as exc:
+            print(f"warning: failed to set memory limit: {exc}", file=err_stream)
+
+
+class OCRUtils:
+    """Shared OCR string/config helpers."""
+
+    @staticmethod
+    def config_str(*parts: str) -> str:
+        return " ".join(part for part in parts if part)
+
+
+class ImageOCRUtils:
+    """Reusable image OCR helpers shared by image extractor and worker."""
+
+    @staticmethod
+    def inspect_image(path: Path, stop_after_frames: int = 2) -> Tuple[int, int, int]:
+        from PIL import Image, ImageSequence
+
+        with Image.open(path) as im:
+            width, height = im.size
+            frame_count = 0
+            try:
+                for _ in ImageSequence.Iterator(im):
+                    frame_count += 1
+                    if frame_count >= stop_after_frames:
+                        break
+            except Exception:
+                frame_count = 1
+
+        if frame_count == 0:
+            frame_count = 1
+        return width, height, frame_count
+
+    @staticmethod
+    def load_images(path: Path, max_side: int):
+        from PIL import Image, ImageSequence
+
+        images = []
+        with Image.open(path) as im:
+            try:
+                for frame in ImageSequence.Iterator(im):
+                    images.append(frame.convert("RGB"))
+            except Exception:
+                images.append(im.convert("RGB"))
+
+        out = []
+        for image in images:
+            if max(image.size) > max_side:
+                scale = max_side / max(image.size)
+                new_size = (int(image.width * scale), int(image.height * scale))
+                image = image.resize(new_size, Image.LANCZOS)
+            out.append(image)
+        return out
+
+    @staticmethod
+    def preprocess_light(pil_img):
+        from PIL import ImageOps
+
+        image = ImageOps.grayscale(pil_img)
+        return image.point(lambda pixel: 255 if pixel > 200 else 0)
+
+    @staticmethod
+    def ensure_longside_bottom(pil_img):
+        width, height = pil_img.size
+        short_side, long_side = sorted((width, height))
+        ratio = short_side / long_side
+        letter_ratio = 8.5 / 11
+        if abs(ratio - letter_ratio) > 0.05 and height > width:
+            return pil_img.rotate(90, expand=True)
+        return pil_img
+
+    @staticmethod
+    def detect_and_correct_orientation(pil_img):
+        import pytesseract
+
+        try:
+            osd = pytesseract.image_to_osd(pil_img)
+        except pytesseract.TesseractError:
+            return pil_img
+
+        rotation_match = re.search(r"Rotate: (\d+)", osd)
+        if rotation_match:
+            angle = int(rotation_match.group(1))
+            if angle != 0:
+                pil_img = pil_img.rotate(360 - angle, expand=True)
+        return pil_img
+
+    @staticmethod
+    def inject_dpi(pil_img, dpi: int):
+        existing = pil_img.info.get("dpi", (0, 0))[0]
+        if not existing:
+            pil_img.info["dpi"] = (dpi, dpi)
+        return pil_img
 

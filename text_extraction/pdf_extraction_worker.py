@@ -1,26 +1,11 @@
+# text_extraction/pdf_extraction_worker.py
 import argparse
 import json
 import sys
-from typing import Optional
 
 import ocrmypdf
 
-
-def _apply_memory_limit(mem_mb: Optional[int]) -> None:
-    if mem_mb is None:
-        return
-
-    if not sys.platform.startswith("linux"):
-        print("warning: --mem-mb is only supported on Linux; ignoring", file=sys.stderr)
-        return
-
-    try:
-        import resource
-
-        limit_bytes = mem_mb * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
-    except Exception as exc:
-        print(f"warning: failed to set memory limit: {exc}", file=sys.stderr)
+from .extraction_utils import SubprocessUtils
 
 
 def _parse_params(params_json_arg: str) -> dict:
@@ -46,7 +31,7 @@ def main() -> int:
         if not isinstance(ocr_params, dict):
             raise ValueError("--params-json must decode to a JSON object")
 
-        _apply_memory_limit(args.mem_mb)
+        SubprocessUtils.apply_memory_limit(args.mem_mb, stderr=sys.stderr)
         ocrmypdf.ocr(input_file=args.input, output_file=args.output, **ocr_params)
         return 0
     except Exception as exc:

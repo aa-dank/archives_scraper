@@ -6,10 +6,10 @@ import pytesseract
 import re
 import subprocess
 import sys
+import tempfile
 from typing import List, Tuple
 from pathlib import Path
-from PIL import Image, ImageOps, ImageSequence
-import numpy as np
+from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +20,8 @@ _IMAGE_OCR_SUBPROCESS_MEM_MB_RAW = os.getenv("IMAGE_OCR_SUBPROCESS_MEM_MB")
 IMAGE_OCR_SUBPROCESS_MEM_MB = int(_IMAGE_OCR_SUBPROCESS_MEM_MB_RAW) if _IMAGE_OCR_SUBPROCESS_MEM_MB_RAW else None
 IMAGE_OCR_SUBPROCESS_STDERR_MAX_BYTES = 8192
 
-try:
-    import cv2  # optional for better preprocessing
-    _HAS_CV2 = True
-except ImportError:
-    _HAS_CV2 = False
-
 from .basic_extraction import FileTextExtractor
+from .extraction_utils import ImageOCRUtils, OCRUtils
 
 
 class ImageTextExtractor(FileTextExtractor):
@@ -135,27 +130,16 @@ class ImageTextExtractor(FileTextExtractor):
 
     @staticmethod
     def _inspect_image(path: Path) -> Tuple[int, int, int]:
-        with Image.open(path) as im:
-            width, height = im.size
-            frame_count = 0
-            try:
-                for _ in ImageSequence.Iterator(im):
-                    frame_count += 1
-                    if frame_count > 1:
-                        break
-            except Exception:
-                frame_count = 1
-
-        if frame_count == 0:
-            frame_count = 1
-        return width, height, frame_count
+        return ImageOCRUtils.inspect_image(path, stop_after_frames=2)
 
     @staticmethod
-    def _read_stderr_snippet(stderr_text: str, max_bytes: int = IMAGE_OCR_SUBPROCESS_STDERR_MAX_BYTES) -> str:
-        if not stderr_text:
+    def _read_stderr_snippet(stderr_file, max_bytes: int = IMAGE_OCR_SUBPROCESS_STDERR_MAX_BYTES) -> str:
+        stderr_file.flush()
+        stderr_file.seek(0)
+        stderr_bytes = stderr_file.read(max_bytes + 1)
+        if not stderr_bytes:
             return ""
 
-        stderr_bytes = stderr_text.encode("utf-8", errors="replace")
         is_truncated = len(stderr_bytes) > max_bytes
         snippet = stderr_bytes[:max_bytes].decode("utf-8", errors="replace").strip()
         if is_truncated:
@@ -182,41 +166,43 @@ class ImageTextExtractor(FileTextExtractor):
         if mem_mb is not None:
             cmd.extend(["--mem-mb", str(mem_mb)])
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stderr_snippet = ImageTextExtractor._read_stderr_snippet(exc.stderr or "")
+        with tempfile.NamedTemporaryFile(prefix="image_ocr_subprocess_stderr_", suffix=".log") as stderr_file:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr_file,
+                    text=True,
+                    timeout=timeout_s,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                stderr_snippet = ImageTextExtractor._read_stderr_snippet(stderr_file)
+                logger.error(
+                    "Image OCR subprocess timed out: path=%s timeout_s=%s stderr=%s",
+                    path,
+                    timeout_s,
+                    stderr_snippet,
+                )
+                raise RuntimeError("image ocr subprocess timed out")
+
+            if result.returncode == 0:
+                return result.stdout
+
+            stderr_snippet = ImageTextExtractor._read_stderr_snippet(stderr_file)
             logger.error(
-                "Image OCR subprocess timed out: path=%s timeout_s=%s stderr=%s",
+                "Image OCR subprocess failed: path=%s returncode=%s stderr=%s",
                 path,
-                timeout_s,
+                result.returncode,
                 stderr_snippet,
             )
-            raise RuntimeError("image ocr subprocess timed out")
 
-        if result.returncode == 0:
-            return result.stdout
+            if result.returncode == -9:
+                raise RuntimeError("image ocr subprocess killed (likely OOM)")
 
-        stderr_snippet = ImageTextExtractor._read_stderr_snippet(result.stderr)
-        logger.error(
-            "Image OCR subprocess failed: path=%s returncode=%s stderr=%s",
-            path,
-            result.returncode,
-            stderr_snippet,
-        )
-
-        if result.returncode == -9:
-            raise RuntimeError("image ocr subprocess killed (likely OOM)")
-
-        raise RuntimeError(
-            f"image ocr subprocess failed (returncode={result.returncode}): {stderr_snippet}"
-        )
+            raise RuntimeError(
+                f"image ocr subprocess failed (returncode={result.returncode}): {stderr_snippet}"
+            )
 
     def _worker_config(self) -> dict:
         return {
@@ -233,24 +219,7 @@ class ImageTextExtractor(FileTextExtractor):
     def _load_images(self, path: Path) -> List[Image.Image]:
         """Handle multi-page TIFFs and GIFs gracefully."""
         logger.debug(f"Loading images from path: {path}")
-        imgs = []
-        with Image.open(path) as im:
-            try:
-                for frame in ImageSequence.Iterator(im):
-                    imgs.append(frame.convert("RGB"))
-            except Exception:
-                # Not multi-frame
-                imgs.append(im.convert("RGB"))
-        # Resize if gigantic
-        out = []
-        for img in imgs:
-            if max(img.size) > self.max_side:
-                scale = self.max_side / max(img.size)
-                new_sz = (int(img.width * scale), int(img.height * scale))
-                img = img.resize(new_sz, Image.LANCZOS)
-                logger.debug(f"Resized image to: {new_sz}")
-            out.append(img)
-        return out
+        return ImageOCRUtils.load_images(path=path, max_side=self.max_side)
 
     def _preprocess(self, pil_img: Image.Image) -> Image.Image:
         """
@@ -258,8 +227,15 @@ class ImageTextExtractor(FileTextExtractor):
           - convert to grayscale
           - optional OpenCV adaptive threshold / denoise if available
         """
-        logger.debug("Starting preprocessing of image, _HAS_CV2=%s", _HAS_CV2)
-        if _HAS_CV2:
+        try:
+            import cv2  # optional for better preprocessing
+            import numpy as np
+            has_cv2 = True
+        except ImportError:
+            has_cv2 = False
+
+        logger.debug("Starting preprocessing of image, _HAS_CV2=%s", has_cv2)
+        if has_cv2:
             img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2GRAY)
             # adaptive threshold helps on uneven lighting
             img = cv2.adaptiveThreshold(img, 255,
@@ -278,15 +254,11 @@ class ImageTextExtractor(FileTextExtractor):
         Rotate image to landscape if its short/long ratio deviates from
         8.5×11 (≈0.773), so the long side ends up on the bottom.
         """
-        w, h = pil_img.size
-        short_side, long_side = sorted((w, h))
-        ratio = short_side / long_side
-        letter_ratio = 8.5 / 11
-        # if it’s not roughly letter‐sized and is portrait, rotate to landscape
-        if abs(ratio - letter_ratio) > 0.05 and h > w:
+        rotated = ImageOCRUtils.ensure_longside_bottom(pil_img)
+        if rotated is not pil_img:
+            w, h = pil_img.size
             logger.debug(f"Rotating image from portrait to landscape: {w}x{h}")
-            return pil_img.rotate(90, expand=True)
-        return pil_img
+        return rotated
 
     def detect_and_correct_orientation(self, pil_img: Image.Image) -> Image.Image:
         """
@@ -311,13 +283,12 @@ class ImageTextExtractor(FileTextExtractor):
         """
         Inject DPI into the image metadata if not present.
         """
-        existing = pil_img.info.get("dpi", (0,0))[0]
+        existing = pil_img.info.get("dpi", (0, 0))[0]
         if not existing:
             logger.debug(f"Injecting default DPI {dpi} into image")
-            pil_img.info["dpi"] = (dpi, dpi)
-        return pil_img
+        return ImageOCRUtils.inject_dpi(pil_img, dpi)
 
 
 # Small utility so we can extend config easily
 def config_str(*parts: str) -> str:
-    return " ".join(part for part in parts if part)
+    return OCRUtils.config_str(*parts)
