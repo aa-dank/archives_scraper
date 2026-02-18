@@ -18,6 +18,11 @@ from db.db import get_db_engine
 from logging_configuration import configure_logging, get_logger
 from text_extraction.basic_extraction import TextFileTextExtractor
 from text_extraction.image_extraction import ImageTextExtractor
+from text_extraction.office_doc_extraction import (
+    PresentationTextExtractor,
+    SpreadsheetTextExtractor,
+    WordFileTextExtractor,
+)
 from text_extraction.pdf_extraction import PDFTextExtractor
 from text_extraction.web_extraction import EmailTextExtractor, HtmlTextExtractor
 from worker import run_worker
@@ -157,6 +162,9 @@ def main(
     extractors = [
         PDFTextExtractor(),
         ImageTextExtractor(),
+        WordFileTextExtractor(),
+        PresentationTextExtractor(),
+        SpreadsheetTextExtractor(),
         HtmlTextExtractor(),
         EmailTextExtractor(),
         TextFileTextExtractor(),

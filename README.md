@@ -205,12 +205,3 @@ CREATE TABLE file_content_failures (
 ```bash
 python -m cli --include-failures --limit 50
 ```
-
-## Migration from Old System
-
-The old monolithic `main.py` has been preserved as `main_old.py`. The new system provides:
-- Better separation of concerns
-- Structured logging instead of print statements
-- Dedicated failure tracking table (no more sentinel rows)
-- CLI argument parsing with environment variable support
-- Testable, callable components (no global state)
