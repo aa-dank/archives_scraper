@@ -1,8 +1,11 @@
 import logging
 import os
 import re
+import json
 import shutil
+import shlex
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -14,6 +17,146 @@ from .basic_extraction import FileTextExtractor, TextExtractionError
 from .extraction_utils import validate_file
 
 logger = logging.getLogger(__name__)
+
+OFFICE_SUBPROCESS_FILESIZE_THRESHOLD_BYTES = int(
+    os.getenv("OFFICE_SUBPROCESS_FILESIZE_THRESHOLD_BYTES", str(75 * 1024 * 1024))
+)
+OFFICE_WORKER_TIMEOUT_S = int(os.getenv("OFFICE_WORKER_TIMEOUT_S", "180"))
+OFFICE_WORKER_MODE_ENV = "OFFICE_WORKER_MODE"
+OFFICE_WORKER_STDERR_TAIL_MAX_CHARS = 4000
+OFFICE_WORKER_MODULE = "text_extraction.office_extraction_worker"
+
+_OFFICE_WORKER_MEM_MB_RAW = os.getenv("OFFICE_WORKER_MEM_MB")
+if _OFFICE_WORKER_MEM_MB_RAW is None:
+    OFFICE_WORKER_MEM_MB = 2048
+else:
+    try:
+        OFFICE_WORKER_MEM_MB = int(_OFFICE_WORKER_MEM_MB_RAW)
+    except ValueError:
+        logger.warning("Invalid OFFICE_WORKER_MEM_MB=%s; defaulting to 2048", _OFFICE_WORKER_MEM_MB_RAW)
+        OFFICE_WORKER_MEM_MB = 2048
+
+OFFICE_LEGACY_ALWAYS_SUBPROCESS = {"doc", "ppt", "pps", "xls"}
+OFFICE_MODERN_SIZE_GATED_SUBPROCESS = {"docx", "docm", "pptx", "pptm", "ppsx", "xlsx", "xlsm"}
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _tail_text(text: str | None, max_chars: int = OFFICE_WORKER_STDERR_TAIL_MAX_CHARS) -> str:
+    if not text:
+        return ""
+    cleaned = text.strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return f"...[truncated] {cleaned[-max_chars:]}"
+
+
+def _in_office_worker_mode() -> bool:
+    return _env_flag(OFFICE_WORKER_MODE_ENV, default=False)
+
+
+def _should_route_to_office_subprocess(source: Path, ext: str) -> bool:
+    if _in_office_worker_mode():
+        return False
+
+    if ext in OFFICE_LEGACY_ALWAYS_SUBPROCESS:
+        return True
+
+    if ext in OFFICE_MODERN_SIZE_GATED_SUBPROCESS:
+        return source.stat().st_size >= OFFICE_SUBPROCESS_FILESIZE_THRESHOLD_BYTES
+
+    return False
+
+
+def run_office_worker(
+    input_path: Path | str,
+    *,
+    timeout_s: int = OFFICE_WORKER_TIMEOUT_S,
+    mem_mb: int | None = OFFICE_WORKER_MEM_MB,
+    config: dict | None = None,
+    worker_cmd: list[str] | None = None,
+) -> str:
+    source = validate_file(str(input_path))
+    worker_config = config or {}
+
+    cmd_override = os.getenv("OFFICE_WORKER_CMD")
+    if worker_cmd is not None:
+        cmd = list(worker_cmd)
+    elif cmd_override:
+        cmd = shlex.split(cmd_override)
+    else:
+        cmd = [sys.executable, "-m", OFFICE_WORKER_MODULE]
+
+    cmd.extend(["--input", str(source), "--config-json", json.dumps(worker_config)])
+
+    if timeout_s is not None:
+        cmd.extend(["--timeout-s", str(timeout_s)])
+
+    if mem_mb is not None:
+        cmd.extend(["--mem-mb", str(mem_mb)])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stderr_tail = _tail_text(exc.stderr)
+        raise TextExtractionError(
+            f"office worker timed out after {timeout_s}s: reason=timeout retryable=True stderr_tail={stderr_tail}"
+        ) from exc
+
+    stderr_tail = _tail_text(result.stderr)
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        raise TextExtractionError(
+            f"office worker crash: reason=worker_crash retryable=True worker_exit_code={result.returncode} worker_stderr_tail={stderr_tail}"
+        )
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise TextExtractionError(
+            f"office worker crash: reason=worker_crash retryable=True worker_exit_code={result.returncode} worker_stderr_tail={stderr_tail}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise TextExtractionError(
+            f"office worker crash: reason=worker_crash retryable=True worker_exit_code={result.returncode} worker_stderr_tail={stderr_tail}"
+        )
+
+    ok = bool(payload.get("ok", False))
+    if not ok:
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        reason = str(error.get("reason", "parse_failed"))
+        retryable = bool(error.get("retryable", False))
+        details = error.get("details") if isinstance(error.get("details"), dict) else {}
+        raise TextExtractionError(
+            "office worker failed: "
+            f"reason={reason} retryable={retryable} details={details} "
+            f"worker_exit_code={result.returncode} worker_stderr_tail={stderr_tail}"
+        )
+
+    if result.returncode != 0:
+        raise TextExtractionError(
+            f"office worker crash: reason=worker_crash retryable=True worker_exit_code={result.returncode} worker_stderr_tail={stderr_tail}"
+        )
+
+    text = payload.get("text", "")
+    if not isinstance(text, str):
+        raise TextExtractionError(
+            f"office worker crash: reason=worker_crash retryable=True worker_exit_code={result.returncode} worker_stderr_tail={stderr_tail}"
+        )
+
+    return text
 
 
 class OfficeConverter:
@@ -109,7 +252,10 @@ class OfficeConverter:
                 f"LibreOffice executable not found: {self.soffice_path}"
             ) from exc
         finally:
-            shutil.rmtree(job_root, ignore_errors=True)
+            if _env_flag("DEBUG_KEEP_TEMPS", default=False):
+                logger.warning("Preserving Office temp directory for debug: %s", job_root)
+            else:
+                shutil.rmtree(job_root, ignore_errors=True)
 
     @staticmethod
     def _select_output(convert_out: Path, source: Path, target_ext: str) -> Path:
@@ -171,6 +317,10 @@ class WordFileTextExtractor(FileTextExtractor):
     def __call__(self, path: str) -> str:
         source = validate_file(path)
         ext = source.suffix.lower().lstrip(".")
+
+        if _should_route_to_office_subprocess(source, ext):
+            return run_office_worker(source, config=self._worker_config())
+
         method_used = ""
 
         if ext in ("docx", "docm"):
@@ -209,6 +359,12 @@ class WordFileTextExtractor(FileTextExtractor):
             },
         )
         return normalized
+
+    def _worker_config(self) -> dict:
+        return {
+            "soffice_path": self.converter.soffice_path,
+            "max_output_chars": self.max_output_chars,
+        }
 
     def _extract_docx(self, path: Path) -> tuple[str, str, int]:
         mammoth_text = ""
@@ -270,6 +426,9 @@ class PresentationTextExtractor(FileTextExtractor):
         source = validate_file(path)
         ext = source.suffix.lower().lstrip(".")
 
+        if _should_route_to_office_subprocess(source, ext):
+            return run_office_worker(source, config=self._worker_config())
+
         if ext in ("pptx", "pptm", "ppsx"):
             text, slide_count, shapes_scanned, truncated, notes_included = self._extract_pptx(source)
             method_used = "python-pptx"
@@ -301,6 +460,16 @@ class PresentationTextExtractor(FileTextExtractor):
             },
         )
         return normalized
+
+    def _worker_config(self) -> dict:
+        return {
+            "soffice_path": self.converter.soffice_path,
+            "include_ppt_notes": self.include_notes,
+            "ppt": {
+                "max_slides": self.max_slides,
+                "max_chars_per_slide": self.max_chars_per_slide,
+            },
+        }
 
     def _extract_pptx(self, path: Path) -> tuple[str, int, int, bool, bool]:
         try:
@@ -421,6 +590,9 @@ class SpreadsheetTextExtractor(FileTextExtractor):
         source = validate_file(path)
         ext = source.suffix.lower().lstrip(".")
 
+        if _should_route_to_office_subprocess(source, ext):
+            return run_office_worker(source, config=self._worker_config())
+
         if ext in ("xlsx", "xlsm"):
             text, sheets_scanned, rows_scanned, cells_scanned, truncated = self._extract_xlsx(source)
             method_used = "openpyxl"
@@ -452,6 +624,17 @@ class SpreadsheetTextExtractor(FileTextExtractor):
             },
         )
         return normalized
+
+    def _worker_config(self) -> dict:
+        return {
+            "soffice_path": self.converter.soffice_path,
+            "xlsx": {
+                "max_sheets": self.max_sheets,
+                "max_rows_per_sheet": self.max_rows_per_sheet,
+                "max_cols_per_sheet": self.max_cols_per_sheet,
+                "max_total_cells": self.max_total_cells,
+            },
+        }
 
     def _extract_xlsx(self, path: Path) -> tuple[str, int, int, int, bool]:
         try:
