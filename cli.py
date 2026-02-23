@@ -49,6 +49,12 @@ load_dotenv()
     help="Seconds between batch polls",
 )
 @click.option(
+    "--max-runtime-seconds",
+    type=float,
+    envvar="MAX_RUNTIME_SECONDS",
+    help="Maximum runtime in seconds before exiting cleanly.",
+)
+@click.option(
     "--extensions",
     type=str,
     envvar="EXTENSIONS",
@@ -120,6 +126,7 @@ load_dotenv()
 def main(
     limit: int | None,
     poll_seconds: float,
+    max_runtime_seconds: float | None,
     extensions: str | None,
     max_chars: int | None,
     enable_embedding: bool,
@@ -201,6 +208,7 @@ def main(
             embedder=embedder_instance,
             poll_seconds=poll_seconds,
             limit=limit,
+            max_runtime_seconds=max_runtime_seconds,
             extensions=ext_set,
             max_chars=max_chars,
             enable_embedding=enable_embedding,

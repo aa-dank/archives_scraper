@@ -49,6 +49,8 @@ python -m cli --poll-seconds 5.0
 ```
 --limit INTEGER           Total files to process before exiting (omit for continuous mode)
 --poll-seconds FLOAT      Seconds between polls/idle checks [default: 5.0]
+--max-runtime-seconds FLOAT
+                          Maximum runtime in seconds before clean exit
 --extensions TEXT         Comma-separated extensions (e.g., "pdf,txt")
 --max-chars INTEGER       Maximum characters to extract. Files exceeding this limit will be recorded as failures and skipped.
 --embed / --no-embed      Enable/disable embedding [default: embed]
@@ -70,6 +72,7 @@ All major options can be set via environment variables:
 ```bash
 export LIMIT=50
 export POLL_SECONDS=10.0
+export MAX_RUNTIME_SECONDS=3600
 export EXTENSIONS="pdf,txt,md"
 export MAX_CHARS=200000
 export RANDOMIZE=true

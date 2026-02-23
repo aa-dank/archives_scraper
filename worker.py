@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import func
 
 from db.models import File, FileContent, FileContentFailure
+from run_conditions import WorkerRunConditions, WorkerRunController
 import logging
 
 logger = logging.getLogger(__name__)
@@ -548,6 +549,7 @@ def run_worker(
     embedder: Any,
     poll_seconds: float = 5.0,
     limit: int | None = None,
+    max_runtime_seconds: float | None = None,
     extensions: set[str] | None = None,
     max_chars: int | None = None,
     backoff_seconds: float | None = None,
@@ -572,6 +574,9 @@ def run_worker(
         Seconds to sleep between polling when no work found.
     limit : int | None
         Total files to process before exiting. If None, run continuously.
+    max_runtime_seconds : float | None
+        Maximum runtime in seconds before exiting cleanly. If None, no
+        runtime-based limit is applied.
     extensions : set[str] | None
         If provided, only process files with these extensions.
     max_chars : int | None
@@ -619,6 +624,7 @@ def run_worker(
         extra={
             "poll_seconds": poll_seconds,
             "limit": limit,
+            "max_runtime_seconds": max_runtime_seconds,
             "extensions": list(extensions) if extensions else None,
             "enable_embedding": enable_embedding,
             "include_failures": include_failures,
@@ -627,21 +633,40 @@ def run_worker(
     )
     
     default_batch_size = 10
-    total_processed = 0
-
-    idle_sleep_seconds = poll_seconds if backoff_seconds is None else backoff_seconds
+    run_controller = WorkerRunController(
+        WorkerRunConditions(
+            limit=limit,
+            max_runtime_seconds=max_runtime_seconds,
+            poll_seconds=poll_seconds,
+            backoff_seconds=backoff_seconds,
+        )
+    )
     
     try:
         while True:
+            stop_reason = run_controller.stop_reason()
+            if stop_reason:
+                logger.info(
+                    "Stopping worker",
+                    extra={
+                        "reason": stop_reason,
+                        "processed": run_controller.total_processed,
+                    },
+                )
+                return 0
+
             with session_factory() as session:
                 # Fetch next batch
-                remaining = None
-                if limit is not None:
-                    remaining = max(limit - total_processed, 0)
-                batch_limit = default_batch_size if remaining is None else min(default_batch_size, remaining)
+                batch_limit = run_controller.next_batch_limit(default_batch_size)
 
                 if batch_limit == 0:
-                    logger.info(f"Reached limit, processed {total_processed} files")
+                    logger.info(
+                        "Stopping worker",
+                        extra={
+                            "reason": "limit_reached",
+                            "processed": run_controller.total_processed,
+                        },
+                    )
                     return 0
 
                 files = next_files_needing_content(
@@ -655,11 +680,24 @@ def run_worker(
                 if not files:
                     logger.info("No files needing processing")
                     if limit is not None:
-                        logger.info(f"Exiting after processing {total_processed} files (limit reached or no work)")
+                        logger.info(
+                            f"Exiting after processing {run_controller.total_processed} files (limit reached or no work)"
+                        )
                         return 0
                     
-                    logger.debug(f"Sleeping {idle_sleep_seconds}s before next poll")
-                    time.sleep(idle_sleep_seconds)
+                    sleep_seconds = run_controller.sleep_seconds(idle=True)
+                    if sleep_seconds <= 0:
+                        logger.info(
+                            "Stopping worker",
+                            extra={
+                                "reason": "runtime_reached",
+                                "processed": run_controller.total_processed,
+                            },
+                        )
+                        return 0
+
+                    logger.debug(f"Sleeping {sleep_seconds}s before next poll")
+                    time.sleep(sleep_seconds)
                     continue
                 
                 logger.info(f"Processing batch of {len(files)} files")
@@ -667,6 +705,17 @@ def run_worker(
                 # Process each file
                 batch_results = {"ok": 0, "no_extractor": 0, "error": 0}
                 for file_record in files:
+                    stop_reason = run_controller.stop_reason()
+                    if stop_reason:
+                        logger.info(
+                            "Stopping worker",
+                            extra={
+                                "reason": stop_reason,
+                                "processed": run_controller.total_processed,
+                            },
+                        )
+                        return 0
+
                     result = process_one_file(
                         session,
                         extractors_by_ext=registry,
@@ -677,7 +726,7 @@ def run_worker(
                         dry_run=dry_run,
                     )
                     batch_results[result["status"]] += 1
-                    total_processed += 1
+                    run_controller.record_processed()
                 
                 logger.info(
                     f"Batch complete",
@@ -689,16 +738,34 @@ def run_worker(
                     }
                 )
                 
-                if limit is not None and total_processed >= limit:
-                    logger.info(f"Reached limit, processed {total_processed} files")
+                stop_reason = run_controller.stop_reason()
+                if stop_reason:
+                    logger.info(
+                        "Stopping worker",
+                        extra={
+                            "reason": stop_reason,
+                            "processed": run_controller.total_processed,
+                        },
+                    )
                     return 0
                 
                 # Brief sleep before next batch
-                if poll_seconds > 0:
-                    time.sleep(poll_seconds)
+                sleep_seconds = run_controller.sleep_seconds(idle=False)
+                if sleep_seconds <= 0:
+                    logger.info(
+                        "Stopping worker",
+                        extra={
+                            "reason": "runtime_reached",
+                            "processed": run_controller.total_processed,
+                        },
+                    )
+                    return 0
+
+                if sleep_seconds > 0:
+                    time.sleep(sleep_seconds)
     
     except KeyboardInterrupt:
-        logger.info(f"Worker interrupted, processed {total_processed} files")
+        logger.info(f"Worker interrupted, processed {run_controller.total_processed} files")
         return 0
     
     except Exception as e:
