@@ -83,6 +83,7 @@ def run_office_worker(
 ) -> str:
     source = validate_file(str(input_path))
     worker_config = config or {}
+    project_root = Path(__file__).resolve().parents[1]
 
     cmd_override = os.getenv("OFFICE_WORKER_CMD")
     if worker_cmd is not None:
@@ -99,7 +100,7 @@ def run_office_worker(
 
     if mem_mb is not None:
         cmd.extend(["--mem-mb", str(mem_mb)])
-
+        
     try:
         result = subprocess.run(
             cmd,

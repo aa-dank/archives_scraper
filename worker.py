@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from text_extraction.basic_extraction import DateExtractor
 from text_extraction.extraction_utils import (
     common_char_replacements,
     strip_diacritics,
@@ -31,7 +32,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import func
 
-from db.models import File, FileContent, FileContentFailure
+from db.models import File, FileContent, FileContentFailure, FileDateMention
 from run_conditions import WorkerRunConditions, WorkerRunController
 import logging
 
@@ -220,6 +221,7 @@ def process_one_file(
     extractors_by_ext: dict[str, Any],
     embedder: Any,
     file_record: Any,
+    date_extractor: DateExtractor | None = None,
     now_fn: Callable[[], datetime] = utcnow,
     max_chars: int | None = None,
     enable_embedding: bool = True,
@@ -358,7 +360,28 @@ def process_one_file(
             return result
         
         result["chars"] = len(extracted_text)
-        
+
+        # --- Date mention extraction ---
+        date_mention_rows = []
+        if extracted_text.strip() and date_extractor is not None:
+            try:
+                date_counts: dict = {}
+                for mention_date in date_extractor(extracted_text):
+                    date_counts[mention_date] = date_counts.get(mention_date, 0) + 1
+                for mention_date, count in date_counts.items():
+                    date_mention_rows.append(FileDateMention(
+                        file_hash=file_record.hash,
+                        mention_date=mention_date,
+                        mentions_count=count,
+                        granularity='day',
+                        extractor='regex-basic',
+                    ))
+            except Exception as exc:
+                logger.warning(
+                    "Date extraction failed, continuing without date mentions",
+                    extra={"file_id": file_record.id, "error": str(exc)},
+                )
+
         # Generate embedding if enabled
         current_stage = STAGE_EMBED
         embedding_vector = None
@@ -404,6 +427,12 @@ def process_one_file(
                 )
         if not dry_run:
             session.add(content)
+            # Replace all date mentions for this file
+            session.query(FileDateMention).filter(
+                FileDateMention.file_hash == file_record.hash
+            ).delete()
+            for dm in date_mention_rows:
+                session.add(dm)
             session.commit()
 
             # Clear any existing failure record on success
@@ -554,6 +583,7 @@ def run_worker(
     max_chars: int | None = None,
     backoff_seconds: float | None = None,
     enable_embedding: bool = True,
+    enable_date_extraction: bool = True,
     include_failures: bool = False,
     randomize: bool = False,
 ) -> int:
@@ -627,10 +657,17 @@ def run_worker(
             "max_runtime_seconds": max_runtime_seconds,
             "extensions": list(extensions) if extensions else None,
             "enable_embedding": enable_embedding,
+            "enable_date_extraction": enable_date_extraction,
             "include_failures": include_failures,
             "randomize": randomize,
         }
     )
+
+    date_extractor = DateExtractor() if enable_date_extraction else None
+    if enable_date_extraction:
+        logger.info("Date extraction enabled")
+    else:
+        logger.info("Date extraction disabled")
     
     default_batch_size = 10
     run_controller = WorkerRunController(
@@ -721,6 +758,7 @@ def run_worker(
                         extractors_by_ext=registry,
                         embedder=embedder,
                         file_record=file_record,
+                        date_extractor=date_extractor,
                         max_chars=max_chars,
                         enable_embedding=enable_embedding,
                         dry_run=dry_run,

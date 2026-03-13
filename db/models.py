@@ -6,7 +6,7 @@ import fnmatch
 import re
 from pathlib import Path, PurePosixPath
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text, Boolean, Numeric, Index, text, Float, JSON, CheckConstraint
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text, Boolean, Numeric, Index, text, Float, JSON, CheckConstraint, Date
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -26,6 +26,12 @@ class File(Base):
     extension = Column(String)
     locations = relationship("FileLocation", back_populates="file", cascade="all, delete-orphan")
     content = relationship("FileContent", back_populates="file", uselist=False, cascade="all, delete-orphan", foreign_keys="[FileContent.file_hash]")
+    date_mentions = relationship(
+        "FileDateMention",
+        back_populates="file",
+        cascade="all, delete-orphan",
+        foreign_keys="[FileDateMention.file_hash]",
+    )
 
 
 class FileLocation(Base):
@@ -70,6 +76,24 @@ class FileContent(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     text_length = Column(Integer)
     file = relationship("File", back_populates="content", foreign_keys=[file_hash])
+
+
+class FileDateMention(Base):
+    __tablename__ = 'file_date_mentions'
+    __table_args__ = (
+        Index('ix_fdm_date', 'mention_date'),
+        Index('ix_fdm_date_gran', 'mention_date', 'granularity'),
+        Index('ix_fdm_file', 'file_hash'),
+    )
+
+    file_hash = Column(String, ForeignKey('files.hash'), primary_key=True)
+    mention_date = Column(Date, primary_key=True)
+    mentions_count = Column(Integer, nullable=False, server_default=text('1'))
+    granularity = Column(Text, primary_key=True, nullable=False, server_default=text("'day'"))
+    extractor = Column(Text)
+    extracted_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    file = relationship("File", back_populates="date_mentions", foreign_keys=[file_hash])
 
 
 class ArchivedFile(Base):

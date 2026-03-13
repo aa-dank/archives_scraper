@@ -75,6 +75,15 @@ load_dotenv()
     help="Enable/disable embedding generation",
 )
 @click.option(
+    "--no-date-extract",
+    "enable_date_extraction",
+    is_flag=True,
+    flag_value=False,
+    default=True,
+    envvar="ENABLE_DATE_EXTRACT",
+    help="Disable date mention extraction (extraction runs by default)",
+)
+@click.option(
     "--embedder",
     type=click.Choice(["minilm"], case_sensitive=False),
     default="minilm",
@@ -130,6 +139,7 @@ def main(
     extensions: str | None,
     max_chars: int | None,
     enable_embedding: bool,
+    enable_date_extraction: bool,
     embedder: str,
     log_level: str,
     log_file: str | None,
@@ -212,6 +222,7 @@ def main(
             extensions=ext_set,
             max_chars=max_chars,
             enable_embedding=enable_embedding,
+            enable_date_extraction=enable_date_extraction,
             include_failures=include_failures,
             randomize=randomize,
             dry_run=dry_run,
