@@ -48,10 +48,14 @@ def common_char_replacements(text: str) -> str:
         "\u2026": "...",  # ellipsis
         "\ufb01": "fi",  # ﬁ ligature
         "\ufb02": "fl",  # ﬂ ligature
-        "\x00": "",  # remove NUL bytes
     }
     for src, dst in replacements_dict.items():
-        text = text.replace(src, dst)   
+        text = text.replace(src, dst)
+    
+    # Strip C0 control characters except \t (\x09), \n (\x0a), \r (\x0d),
+    # and the DEL character (\x7f).  These leak from .msg and .pdf extraction
+    # and carry no textual value.
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     return text
 
 def strip_diacritics(text: str) -> str:
