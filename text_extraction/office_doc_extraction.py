@@ -305,10 +305,66 @@ def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     return text[:max_chars], True
 
 
+class MammothRawTextCleaner:
+    """Strips the inline HTML and Markdown that mammoth.extract_raw_text() leaves behind.
+
+    mammoth outputs mostly plain text, but leaks HTML anchor tags (e.g.
+    ``<a id="_Toc...">``) and Markdown-style formatting (headings, bold, images
+    with data-URI srcs, etc.).  This class handles exactly that output; it is not
+    intended as a general-purpose HTML/Markdown stripper.
+
+    For real HTML documents use ``strip_html`` instead — it uses BeautifulSoup,
+    removes script/style blocks entirely, and collapses whitespace to a flat string.
+    """
+
+    # Inline HTML — any <tag> or </tag> or <tag attr="...">
+    _html_tag_re = re.compile(r"<[^>]+>")
+    # Markdown image with a data URI src — stripped entirely (can be millions of chars)
+    _data_uri_image_re = re.compile(r"!\[[^\]]*\]\(data:[^)]*\)")
+    # Regular Markdown image — stripped entirely (no useful plain-text content)
+    _image_re = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+    # Markdown link — URL dropped, label text kept
+    _link_re = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+    # ATX heading markers (# through ######)
+    _heading_re = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+    # Bold (**text**) — markers removed, text kept; matched before italic
+    _bold_re = re.compile(r"\*\*([^\n*]*?)\*\*")
+    # Italic (*text*) — markers removed, text kept
+    _italic_re = re.compile(r"\*([^\n*]*?)\*")
+    # Double-underscore emphasis (__text__) — markers removed, text kept
+    _double_underscore_re = re.compile(r"__([^\n_]+)__")
+    # Backslash escapes e.g. \( \[ \* — backslash removed, character kept
+    _backslash_escape_re = re.compile(r"\\(.)")
+
+    def strip_html_tags(self, text: str) -> str:
+        """Remove inline HTML tags, preserving all surrounding text and whitespace."""
+        return self._html_tag_re.sub("", text)
+
+    def strip_markdown(self, text: str) -> str:
+        """Remove Markdown formatting marks, preserving plain text content.
+
+        Strips data-URI images entirely (they can be millions of chars), removes
+        regular images, unwraps links to their label text, removes ATX heading
+        markers, unwraps bold/italic/double-underscore emphasis, and unescapes
+        backslash escapes.
+        """
+        text = self._data_uri_image_re.sub("", text)
+        text = self._image_re.sub("", text)
+        text = self._link_re.sub(r"\1", text)
+        text = self._heading_re.sub("", text)
+        # Bold before italic so **text** doesn't partially match *text*
+        text = self._bold_re.sub(r"\1", text)
+        text = self._italic_re.sub(r"\1", text)
+        text = self._double_underscore_re.sub(r"\1", text)
+        text = self._backslash_escape_re.sub(r"\1", text)
+        return text
+
+
 class WordFileTextExtractor(FileTextExtractor):
     """Extract text from Word documents using mammoth/python-docx with LibreOffice fallback for .doc."""
 
     file_extensions: List[str] = ["docx", "docm", "doc"]
+    cleaner = MammothRawTextCleaner()
 
     def __init__(self, converter: OfficeConverter | None = None, max_output_chars: int = 5_000_000):
         super().__init__()
@@ -375,6 +431,10 @@ class WordFileTextExtractor(FileTextExtractor):
             with open(path, "rb") as file_handle:
                 result = mammoth.extract_raw_text(file_handle)
             mammoth_text = (result.value or "").strip()
+            if mammoth_text:
+                mammoth_text = self.cleaner.strip_html_tags(mammoth_text)
+                mammoth_text = self.cleaner.strip_markdown(mammoth_text)
+                mammoth_text = mammoth_text.strip()
             if mammoth_text:
                 paragraphs_count = sum(1 for line in mammoth_text.splitlines() if line.strip())
                 return mammoth_text, "mammoth", paragraphs_count

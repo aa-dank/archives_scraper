@@ -21,7 +21,7 @@ try:
 except ImportError:
     _HAS_UNIDECODE = False
 
-# common replacements (curly quotes, dashes, ligatures, etc.)
+
 def common_char_replacements(text: str) -> str:
     """
     Replace common typographic Unicode characters with simpler ASCII equivalents.
