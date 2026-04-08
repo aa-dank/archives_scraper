@@ -115,20 +115,68 @@ class ArchivedFile(Base):
 class Caan(Base):
     __tablename__ = 'caans'
     id = Column(Integer, primary_key=True)
+    fmp_id_primary = Column(Integer, unique=True)
     caan = Column(String, nullable=False)
     name = Column(String)
     description = Column(String)
+    address_street = Column(String)
+    address_city = Column(String)
+    address_zip = Column(String)
+    area = Column(String)
+    last_synced_at = Column(DateTime(timezone=True))
     project_caans = relationship("ProjectCaan", back_populates="caan")
 
 
 class Project(Base):
     __tablename__ = 'projects'
     id = Column(Integer, primary_key=True)
+    fmp_id_primary = Column(Integer, unique=True)
     number = Column(String, nullable=False)
     name = Column(String, nullable=False)
     file_server_location = Column(String)
     drawings = Column(Boolean)
+    closed = Column(Boolean)
+    campus_client = Column(String)
+    last_synced_at = Column(DateTime(timezone=True))
+    contracts = relationship("Contract", back_populates="project")
     project_caans = relationship("ProjectCaan", back_populates="project")
+
+
+class Contract(Base):
+    __tablename__ = 'contracts'
+    id = Column(Integer, primary_key=True)
+    fmp_id_primary = Column(Integer, unique=True)
+    contract_number = Column(Integer)
+    project_id = Column(Integer, ForeignKey('projects.id'))
+    # Dates
+    contract_date = Column(Date)
+    ntp_start_date = Column(Date)
+    beneficial_occupancy_date = Column(Date)
+    substantial_completion_date = Column(Date)
+    certificate_of_occupancy_date = Column(Date)
+    noc_completion_date = Column(Date)
+    noc_recorded_date = Column(Date)
+    termination_date = Column(Date)
+    bid_date = Column(Date)
+    change_order_revised_expected_end = Column(Date)
+    # Financial
+    cost_estimate = Column(Numeric(14, 2))
+    original_contract_cost = Column(Numeric(14, 2))
+    change_order_total = Column(Numeric(14, 2))
+    change_order_revised_cost = Column(Numeric(14, 2))
+    account_number = Column(String)
+    funding_number = Column(String)
+    # Duration (days)
+    original_project_duration = Column(Integer)
+    change_order_time_total = Column(Integer)
+    change_order_revised_duration = Column(Integer)
+    # Parties & description
+    contractor_org_name = Column(String)
+    executive_design_org_name = Column(String)
+    scope_description = Column(Text)
+    # Sync metadata
+    last_synced_at = Column(DateTime(timezone=True), server_default=func.now())
+    project = relationship("Project", back_populates="contracts")
 
 
 class ProjectCaan(Base):
