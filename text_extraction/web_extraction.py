@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import List
 from email import policy
 
+import extract_msg
+
 from .basic_extraction import FileTextExtractor
 from .extraction_utils import validate_file, strip_html
 
@@ -167,6 +169,11 @@ class EmailTextExtractor(FileTextExtractor):
         p = validate_file(path)
         logger.debug(f"Validated email file path: {p}")
 
+        ext = p.suffix.lower().lstrip(".")
+        if ext == "msg":
+            return self._extract_from_msg(p)
+
+        # EML: use stdlib MIME parser
         with open(p, "rb") as f:
             msg = email.message_from_binary_file(f, policy=policy.default)
 
@@ -183,3 +190,33 @@ class EmailTextExtractor(FileTextExtractor):
         # normalize overall whitespace
         combined = " ".join(text_parts)
         return normalize_whitespace(combined)
+
+    def _extract_from_msg(self, p: Path) -> str:
+        """Extract text from a Microsoft Outlook .msg file (OLE/CFB format)."""
+        from .extraction_utils import strip_html, normalize_whitespace
+
+        with extract_msg.openMsg(str(p)) as msg:
+            parts = []
+
+            if msg.sender:
+                parts.append(f"From: {msg.sender}")
+            if msg.to:
+                parts.append(f"To: {msg.to}")
+            if msg.cc:
+                parts.append(f"CC: {msg.cc}")
+            if msg.date:
+                parts.append(f"Date: {msg.date}")
+            if msg.subject:
+                parts.append(f"Subject: {msg.subject}")
+
+            body = msg.body
+            if not body and msg.htmlBody:
+                body = strip_html(
+                    msg.htmlBody.decode("utf-8", errors="ignore"),
+                    parser=self.parser,
+                )
+            if body:
+                parts.append(body)
+
+            combined = " ".join(parts)
+            return normalize_whitespace(combined)

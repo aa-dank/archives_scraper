@@ -5,10 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "beautifulsoup4>=4.14.3",
+    "beautifulsoup4>=4.13.0",
     "click>=8.3.1",
     "cobble>=0.1.4",
     "et-xmlfile>=2.0.0",
+    "extract-msg>=0.49.0",
     "httpx>=0.28.1",
     "lxml>=6.0.2",
     "mammoth>=1.11.0",
