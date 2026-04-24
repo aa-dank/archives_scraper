@@ -116,7 +116,7 @@ class Caan(Base):
     __tablename__ = 'caans'
     id = Column(Integer, primary_key=True)
     fmp_id_primary = Column(Integer, unique=True)
-    caan = Column(String, nullable=False)
+    caan = Column(String, nullable=False, unique=True)
     name = Column(String)
     description = Column(String)
     address_street = Column(String)
