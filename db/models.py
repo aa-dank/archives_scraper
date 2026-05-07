@@ -65,14 +65,11 @@ class FileContent(Base):
     __tablename__ = 'file_contents'
     __table_args__ = (
         Index('ix_file_contents_minilm_emb', 'minilm_emb', postgresql_using='ivfflat', postgresql_ops={'minilm_emb': 'vector_cosine_ops'}, postgresql_with={'lists': 100}),
-        Index('ix_file_contents_mpnet_emb', 'mpnet_emb', postgresql_using='ivfflat', postgresql_ops={'mpnet_emb': 'vector_cosine_ops'}, postgresql_with={'lists': 100}),
     )
     file_hash = Column(String, ForeignKey('files.hash'), primary_key=True)
     source_text = Column(Text)
     minilm_model = Column(Text, default='all-minilm-l6-v2')
     minilm_emb = Column(Vector(384))
-    mpnet_model = Column(Text)
-    mpnet_emb = Column(Vector(768))
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     text_length = Column(Integer)
     file = relationship("File", back_populates="content", foreign_keys=[file_hash])
