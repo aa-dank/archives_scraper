@@ -1,12 +1,9 @@
 # db/models.py
 
 import logging
-import os
-import fnmatch
-import re
 from pathlib import Path, PurePosixPath
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text, Boolean, Numeric, Index, text, Float, JSON, CheckConstraint, Date
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text, Boolean, Numeric, Index, text, Float, JSON, CheckConstraint, Date, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -73,6 +70,35 @@ class FileContent(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     text_length = Column(Integer)
     file = relationship("File", back_populates="content", foreign_keys=[file_hash])
+    fts_chunks = relationship("FileContentFtsChunk", back_populates="file_content", cascade="all, delete-orphan")
+
+
+class FileContentFtsChunk(Base):
+    __tablename__ = "file_content_fts_chunks"
+    __table_args__ = (
+        UniqueConstraint(
+            "file_hash",
+            "chunk_index",
+            "chunked_at",
+            name="uq_file_content_fts_chunks_file_hash_chunk_index",
+        ),
+        CheckConstraint(
+            "length(chunk_text) > 0",
+            name="ck_file_content_fts_chunks_nonempty",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    file_hash = Column(
+        String,
+        ForeignKey("file_contents.file_hash", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_index = Column(Integer, nullable=False)
+    chunk_text = Column(Text, nullable=False)
+    chunked_at = Column(DateTime(timezone=True), nullable=False)
+
+    file_content = relationship("FileContent", back_populates="fts_chunks", foreign_keys=[file_hash])
 
 
 class FileDateMention(Base):
