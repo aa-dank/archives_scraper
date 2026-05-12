@@ -33,7 +33,6 @@ venv.bak/
 
 # uv
 .python-version
-uv.lock
 
 # IDEs
 .vscode/
