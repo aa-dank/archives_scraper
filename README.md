@@ -2,6 +2,20 @@
 
 This document describes the new modular extraction worker system for processing files, extracting text, and generating embeddings.
 
+## Dependency Profiles (Important)
+
+Use one of these dependency profiles based on how you run the worker:
+
+- Extraction-only mode (`--no-embed` or `ENABLE_EMBEDDING=false`): does not use `sentence-transformers` or `torch` at runtime.
+- Embedding-enabled mode (`--embed`): uses `embedding/minilm.py`, which imports `sentence-transformers` and therefore requires `torch`.
+
+### CUDA / PyTorch clarification
+
+- This project does not require CUDA for correctness. CPU embedding is acceptable.
+- The current lockfile may still include NVIDIA/CUDA-related transitive packages when resolving newer `torch` on Linux.
+- If you do not need embeddings, run with `--no-embed` and avoid treating CUDA packages as required runtime dependencies for extraction.
+- If you do need embeddings, prefer CPU-only PyTorch resolution in environment management to avoid unnecessary GPU runtime packages.
+
 ## Architecture
 
 The system consists of three main components:
@@ -37,6 +51,11 @@ Click-based CLI wrapper around `run_worker()`.
 Process a fixed number of files and exit:
 ```bash
 python -m cli --limit 10
+```
+
+Process files without embedding (recommended when semantic vectors are not needed):
+```bash
+python -m cli --no-embed --limit 10
 ```
 
 Run continuously with polling:
