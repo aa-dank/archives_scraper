@@ -417,6 +417,9 @@ def process_one_file(
             if dim == 384:  # MiniLM dimension
                 content.minilm_emb = embedding_vector
                 content.minilm_model = model_name
+            elif dim == 768:  # MPNet dimension
+                content.mpnet_emb = embedding_vector
+                content.mpnet_model = model_name
             else:
                 logger.warning(
                     f"Unknown embedding dimension",
