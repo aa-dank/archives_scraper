@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from text_extraction.basic_extraction import DateExtractor
+from text_extraction.chunking import TextChunker
 from text_extraction.extraction_utils import (
     common_char_replacements,
     strip_diacritics,
@@ -32,7 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import func
 
-from db.models import File, FileContent, FileContentFailure, FileDateMention
+from db.models import File, FileContent, FileContentFailure, FileDateMention, FileContentFtsChunk
 from run_conditions import WorkerRunConditions, WorkerRunController
 import logging
 
@@ -427,12 +428,28 @@ def process_one_file(
                 )
         if not dry_run:
             session.add(content)
+
             # Replace all date mentions for this file
             session.query(FileDateMention).filter(
                 FileDateMention.file_hash == file_record.hash
             ).delete()
             for dm in date_mention_rows:
                 session.add(dm)
+
+            # Generate and insert text chunks for FTS
+            if extracted_text.strip():
+                chunk_rows = TextChunker.build_chunk_rows(
+                    file_hash=file_record.hash,
+                    text=extracted_text,
+                    chunked_at=now_fn(),
+                )
+                # Delete existing chunks for this file (safe on re-run)
+                session.query(FileContentFtsChunk).filter(
+                    FileContentFtsChunk.file_hash == file_record.hash
+                ).delete()
+                for chunk_row in chunk_rows:
+                    session.add(FileContentFtsChunk(**chunk_row))
+
             session.commit()
 
             # Clear any existing failure record on success
