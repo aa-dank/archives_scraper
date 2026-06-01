@@ -65,7 +65,7 @@ class FileContent(Base):
     )
     file_hash = Column(String, ForeignKey('files.hash'), primary_key=True)
     source_text = Column(Text)
-    minilm_model = Column(Text, default='all-minilm-l6-v2')
+    minilm_model = Column(Text, default='all-MiniLM-L6-v2')
     minilm_emb = Column(Vector(384))
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     text_length = Column(Integer)
