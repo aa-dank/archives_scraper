@@ -34,7 +34,7 @@ Pure execution engine with no CLI dependencies.
 - `run_worker()` - Main execution loop with configurable polling
 
 **Failure Handling:**
-- Failures are recorded in the `file_content_failures` table with stage, error, and attempt count
+- Failures are recorded in the `file_content_failures` table with stage, error, attempt count, and source provenance metadata
 - `FileContent` rows only exist for successful extractions (Option A semantics)
 - Failed files are excluded from requeue by default, preventing infinite loops
 - Successful processing clears any prior failure record
@@ -102,11 +102,14 @@ export ENABLE_EMBEDDING=false
 export EMBEDDER=minilm
 export INCLUDE_FAILURES=false
 export FILE_SERVER_MOUNT=/mnt/n/PPDO/Records
+# Optional stable provenance identifier; defaults to the operating-system hostname
+# export SCRAPER_HOST_NAME=ppdo-prod-app-1.vm.aws.ucsc.edu
 ```
 
 Notes:
 - The CLI loads variables from a local `.env` file (via `python-dotenv`) so the above env vars can be stored there.
 - `FILE_SERVER_MOUNT` is required so the worker can resolve the server-relative paths stored in `file_locations.file_server_directories`.
+- `SCRAPER_HOST_NAME` is optional and overrides the host identifier stored in source metadata; when unset, the worker uses the operating-system hostname.
 
 ### Examples
 
@@ -152,6 +155,8 @@ class MyExtractor:
         # Extract and return text
         pass
 ```
+
+Extractors inherit provenance metadata from `FileTextExtractor`. Each successful or failed processing attempt records `host_name`, `system_name`, `system_version`, `extraction_tool`, and `ocr_extraction` in `source_metadata`. The system name is `archives_scraper`, the version is read from `pyproject.toml`, and `ocr_extraction` is true for image OCR or PDF OCR fallback and false for extractors that do not use OCR.
 
 ## Embedder Interface
 
@@ -212,13 +217,16 @@ CREATE TABLE file_content_failures (
     stage TEXT NOT NULL CHECK (stage IN ('extract', 'embed')),
     error TEXT,
     attempts INTEGER NOT NULL DEFAULT 1,
-    last_failed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    last_failed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    CHECK (jsonb_typeof(source_metadata) = 'object')
 );
 ```
 
 **Semantics:**
 - `stage` indicates where failure occurred: `extract` (text extraction) or `embed` (embedding generation)
 - `attempts` increments on each retry failure
+- `source_metadata` records the host, scraper version, extractor, and OCR involvement for the failed attempt
 - On success, the failure record is deleted
 - By default, files with failure records are excluded from processing
 - Use `--include-failures` to retry previously failed files

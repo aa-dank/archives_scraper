@@ -69,6 +69,7 @@ class FileContent(Base):
     minilm_emb = Column(Vector(384))
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     text_length = Column(Integer)
+    source_metadata = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     file = relationship("File", back_populates="content", foreign_keys=[file_hash])
     fts_chunks = relationship("FileContentFtsChunk", back_populates="file_content", cascade="all, delete-orphan")
 
@@ -297,6 +298,7 @@ class FileContentFailure(Base):
         server_default=func.now(),
         comment="Timestamp of the most recent failure occurrence.",
     )
+    source_metadata = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     file = relationship(
         "File",
         foreign_keys=[file_hash],

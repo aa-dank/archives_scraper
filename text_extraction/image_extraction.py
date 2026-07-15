@@ -63,6 +63,7 @@ class ImageTextExtractor(FileTextExtractor):
             DPI to use for images without embedded DPI info.
         """
         super().__init__()
+        self._last_involved_ocr = False
         if tesseract_cmd:
             pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         self.tesseract_cmd = tesseract_cmd
@@ -74,6 +75,7 @@ class ImageTextExtractor(FileTextExtractor):
         self.default_image_dpi = default_image_dpi
 
     def __call__(self, path: str) -> str:
+        self._last_involved_ocr = True
         logger.info(f"Extracting text from image: {path}")
         p = Path(path)
         if not p.exists():

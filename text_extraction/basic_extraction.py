@@ -5,6 +5,8 @@ import logging
 import os
 import markdown
 import re
+import socket
+import tomllib
 from abc import ABC, abstractmethod
 from datetime import date
 from pathlib import Path
@@ -25,6 +27,28 @@ class FileTextExtractor(ABC):
     implement the __call__ method to handle specific file formats.
     """
     file_extensions: List[str] = None  # Class variable to define supported file extensions
+
+    @staticmethod
+    def _system_version() -> str:
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        with pyproject_path.open("rb") as pyproject_file:
+            return tomllib.load(pyproject_file)["project"]["version"]
+
+    @classmethod
+    def source_metadata(cls, *, extraction_tool: str, involved_ocr: bool = False) -> dict:
+        return {
+            "host_name": os.environ.get("SCRAPER_HOST_NAME") or socket.gethostname(),
+            "system_name": "archives_scraper",
+            "system_version": cls._system_version(),
+            "extraction_tool": extraction_tool,
+            "ocr_extraction": involved_ocr,
+        }
+
+    def extraction_metadata_dict(self) -> dict:
+        return self.source_metadata(
+            extraction_tool=self.__class__.__name__,
+            involved_ocr=getattr(self, "_last_involved_ocr", False),
+        )
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)

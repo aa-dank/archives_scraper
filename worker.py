@@ -11,6 +11,7 @@ This module provides the core worker logic for:
 
 No CLI parsing or global state - callable from anywhere.
 """
+import json
 import os
 import time
 import tempfile
@@ -19,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from text_extraction.basic_extraction import DateExtractor
+from text_extraction.basic_extraction import DateExtractor, FileTextExtractor
 from text_extraction.chunking import TextChunker
 from text_extraction.extraction_utils import (
     common_char_replacements,
@@ -271,6 +272,7 @@ def process_one_file(
     record_location_directories: str | None = None
     record_filename: str | None = None
     temp_fp: str | None = None
+    source_metadata = FileTextExtractor.source_metadata(extraction_tool="none")
     
     try:
         # Determine extension
@@ -291,11 +293,20 @@ def process_one_file(
             )
             if not dry_run:
                 # Record failure to prevent infinite requeue
-                _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
+                _upsert_failure(
+                    session,
+                    file_record.hash,
+                    STAGE_EXTRACT,
+                    error_msg,
+                    now_fn,
+                    source_metadata,
+                )
             result["status"] = "no_extractor"
             result["duration_ms"] = int((time.time() - start_time) * 1000)
             return result
         
+        source_metadata = extractor.extraction_metadata_dict()
+
         # Get file path from first location
         if file_record.locations:
             record_location_directories = file_record.locations[0].file_server_directories
@@ -313,7 +324,14 @@ def process_one_file(
                 extra={"file_id": file_record.id, "stage": STAGE_EXTRACT}
             )
             if not dry_run:
-                _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
+                _upsert_failure(
+                    session,
+                    file_record.hash,
+                    STAGE_EXTRACT,
+                    error_msg,
+                    now_fn,
+                    source_metadata,
+                )
             result["status"] = "error"
             result["duration_ms"] = int((time.time() - start_time) * 1000)
             return result
@@ -334,6 +352,9 @@ def process_one_file(
             shutil.copyfile(str(file_path), temp_fp)
             extracted_text = extractor(temp_fp)
 
+        # Refresh after extraction so OCR involvement is reflected.
+        source_metadata = extractor.extraction_metadata_dict()
+
         if extracted_text:
             extracted_text = common_char_replacements(extracted_text)
             extracted_text = strip_diacritics(extracted_text)
@@ -353,7 +374,14 @@ def process_one_file(
             )
             
             if not dry_run:
-                _upsert_failure(session, file_record.hash, STAGE_EXTRACT, error_msg, now_fn)
+                _upsert_failure(
+                    session,
+                    file_record.hash,
+                    STAGE_EXTRACT,
+                    error_msg,
+                    now_fn,
+                    source_metadata,
+                )
             
             result["status"] = "error" 
             result["chars"] = len(extracted_text)
@@ -403,6 +431,7 @@ def process_one_file(
         
         content.source_text = extracted_text
         content.text_length = len(extracted_text)
+        content.source_metadata = source_metadata
         content.updated_at = now_fn()
         
         if embedding_vector is not None:
@@ -499,6 +528,11 @@ def process_one_file(
                     current_stage,
                     formatted_error[:500],
                     now_fn,
+                    (
+                        extractor.extraction_metadata_dict()
+                        if "extractor" in locals()
+                        else source_metadata
+                    ),
                 )
             except Exception as persist_error:
                 logger.error(
@@ -520,6 +554,7 @@ def _upsert_failure(
     stage: str,
     error: str,
     now_fn: Callable[[], datetime] = utcnow,
+    source_metadata: dict | None = None,
 ) -> None:
     """
     Insert or update a failure record in file_content_failures.
@@ -542,19 +577,30 @@ def _upsert_failure(
         Function returning current UTC datetime.
     """
     upsert_sql = text("""
-        INSERT INTO file_content_failures (file_hash, stage, error, attempts, last_failed_at)
-        VALUES (:file_hash, :stage, :error, 1, :now)
+        INSERT INTO file_content_failures (
+            file_hash, stage, error, attempts, last_failed_at, source_metadata
+        )
+        VALUES (:file_hash, :stage, :error, 1, :now, CAST(:source_metadata AS jsonb))
         ON CONFLICT (file_hash)
         DO UPDATE SET
             stage = EXCLUDED.stage,
             error = EXCLUDED.error,
             attempts = file_content_failures.attempts + 1,
-            last_failed_at = EXCLUDED.last_failed_at
+            last_failed_at = EXCLUDED.last_failed_at,
+            source_metadata = EXCLUDED.source_metadata
     """)
     
     session.execute(
         upsert_sql,
-        {"file_hash": file_hash, "stage": stage, "error": error, "now": now_fn()}
+        {
+            "file_hash": file_hash,
+            "stage": stage,
+            "error": error,
+            "now": now_fn(),
+            "source_metadata": json.dumps(
+                source_metadata or FileTextExtractor.source_metadata(extraction_tool="none")
+            ),
+        }
     )
     session.commit()
     

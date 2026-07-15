@@ -231,6 +231,7 @@ class PDFTextExtractor(FileTextExtractor):
         Initialize PDFTextExtractor with default OCR parameters and stream-size threshold.
         """
         super().__init__()
+        self._last_involved_ocr = False
         self.ocr_params = {
             'rotate_pages': True,
             'deskew': True,
@@ -479,6 +480,7 @@ class PDFTextExtractor(FileTextExtractor):
             return pdf_text
         
         logger.info(f"OCR needed for document: {pdf_document.name}")
+        self._last_involved_ocr = True
         ocr_params = self.ocr_params.copy()
 
         # Large-format pages can trigger expensive rasterization paths when doing
@@ -540,6 +542,8 @@ class PDFTextExtractor(FileTextExtractor):
             Normalized extracted text.
         """
         
+        self._last_involved_ocr = False
+
         # Initialize document handle and result container
         logger.debug(f"__call__: Starting extraction for file {pdf_filepath}")
         doc = None
