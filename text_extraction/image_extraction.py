@@ -73,9 +73,22 @@ class ImageTextExtractor(FileTextExtractor):
         self.preprocess = preprocess
         self.max_side = max_side
         self.default_image_dpi = default_image_dpi
+        self._last_extraction_tool_details: dict[str, object] = {}
+
+    @staticmethod
+    def _failure_kind(error: Exception) -> str:
+        message = str(error).lower()
+        if any(marker in message for marker in ("pixel limit", "maximum image pixels", "decompressionbomb")):
+            return "image_pixel_limit"
+        if "timed out" in message or "timeout" in message:
+            return "ocr_timeout"
+        if any(marker in message for marker in ("out of memory", "oom", "likely oom")):
+            return "ocr_memory_limit"
+        return "image_ocr_failed"
 
     def __call__(self, path: str) -> str:
         self._last_involved_ocr = True
+        self._last_extraction_tool_details = {}
         logger.info(f"Extracting text from image: {path}")
         p = Path(path)
         if not p.exists():
@@ -91,17 +104,21 @@ class ImageTextExtractor(FileTextExtractor):
             or file_size > IMAGE_OCR_FILESIZE_THRESHOLD_BYTES
         )
 
-        if should_use_subprocess:
-            logger.info(
-                "Using image OCR subprocess: path=%s frame_count=%s pixels=%s file_size=%s",
-                p,
-                frame_count,
-                pixel_count,
-                file_size,
-            )
-            return self._run_ocr_subprocess(path=p, worker_config=self._worker_config())
+        try:
+            if should_use_subprocess:
+                logger.info(
+                    "Using image OCR subprocess: path=%s frame_count=%s pixels=%s file_size=%s",
+                    p,
+                    frame_count,
+                    pixel_count,
+                    file_size,
+                )
+                return self._run_ocr_subprocess(path=p, worker_config=self._worker_config())
 
-        return self._extract_in_process(path=p)
+            return self._extract_in_process(path=p)
+        except Exception as exc:
+            self._last_extraction_tool_details = {"failure_kind": self._failure_kind(exc)}
+            raise
 
     def _extract_in_process(self, path: Path | str) -> str:
         p = Path(path)

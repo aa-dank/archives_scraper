@@ -249,6 +249,26 @@ class PDFTextExtractor(FileTextExtractor):
         # If OCR produces less than this many non-whitespace chars, treat as extraction failure.
         # (Allows the worker to record file_content_failures instead of silently writing junk/empty content.)
         self.ocr_min_text_chars = OCR_MIN_TEXT_CHARS
+        self._last_extraction_tool_details: dict[str, object] = {}
+
+    def extraction_metadata_dict(self) -> dict:
+        return self.source_metadata(
+            extraction_tool=self.__class__.__name__,
+            involved_ocr=getattr(self, "_last_involved_ocr", False),
+            extraction_tool_details=self._last_extraction_tool_details,
+        )
+
+    @staticmethod
+    def _ocr_failure_kind(error: Exception) -> str:
+        """Classify OCR failures that have a clear, actionable remediation."""
+        message = str(error).lower()
+        if any(marker in message for marker in ("max-image-mpixels", "max_image_mpixels", "pixel limit", "decompressionbomb")):
+            return "image_pixel_limit"
+        if "timed out" in message or "timeout" in message:
+            return "ocr_timeout"
+        if any(marker in message for marker in ("out of memory", "oom", "likely oom")):
+            return "ocr_memory_limit"
+        return "ocr_all_chunks_failed"
 
     @staticmethod
     def _read_stderr_snippet(stderr_file, max_bytes: int = OCR_SUBPROCESS_STDERR_MAX_BYTES) -> str:
@@ -337,8 +357,13 @@ class PDFTextExtractor(FileTextExtractor):
                 f"OCR subprocess failed (returncode={result.returncode}): {stderr_snippet}"
             )
     
-    @staticmethod
-    def extract_text_with_ocr(pdf_path: Union[str, Path], ocr_params: dict, chunk_size: int = 0) -> str:
+    def extract_text_with_ocr(
+        self,
+        pdf_path: Union[str, Path],
+        ocr_params: dict,
+        chunk_size: int = 0,
+        total_pages: int | None = None,
+    ) -> str:
         """
         Perform OCR on a PDF file and return the extracted text.
         
@@ -374,32 +399,57 @@ class PDFTextExtractor(FileTextExtractor):
         logger.debug(f"Starting OCR extraction for {input_pdf_path} with params: {ocr_params}, chunk_size: {chunk_size}")
         if not input_pdf_path.exists():
             raise FileNotFoundError(f"Input PDF file not found for OCR operation: {input_pdf_path}")
+
+        if total_pages is None:
+            with fitz.open(input_pdf_path) as document:
+                total_pages = document.page_count
+
+        details = self._last_extraction_tool_details
         
         # Non-chunked processing (original behavior)
         if chunk_size <= 0:
-            with tempfile.TemporaryDirectory(prefix="ocr_") as td:
-                output_pdf_path = Path(td) / f"{input_pdf_path.stem}_ocr.pdf"
+            try:
+                with tempfile.TemporaryDirectory(prefix="ocr_") as td:
+                    output_pdf_path = Path(td) / f"{input_pdf_path.stem}_ocr.pdf"
 
-                params = ocr_params.copy()
-                params.pop('input_file', None)
-                params.pop('output_file', None)
-                PDFTextExtractor._run_ocr_subprocess(
-                    input_pdf_path=input_pdf_path,
-                    output_pdf_path=output_pdf_path,
-                    ocr_params=params,
-                    file_identifier=input_pdf_path.name,
-                    chunk_page_range="full-document",
-                )
-                logger.debug(f"OCR completed, reading text from generated PDF")
+                    params = ocr_params.copy()
+                    params.pop('input_file', None)
+                    params.pop('output_file', None)
+                    PDFTextExtractor._run_ocr_subprocess(
+                        input_pdf_path=input_pdf_path,
+                        output_pdf_path=output_pdf_path,
+                        ocr_params=params,
+                        file_identifier=input_pdf_path.name,
+                        chunk_page_range="full-document",
+                    )
+                    logger.debug(f"OCR completed, reading text from generated PDF")
 
-                with fitz.open(output_pdf_path) as doc:
-                    return "".join(page.get_text() for page in doc)
+                    with fitz.open(output_pdf_path) as doc:
+                        extracted_text = "".join(page.get_text() for page in doc)
+            except Exception as exc:
+                details.update({
+                    "extraction_completeness": "none",
+                    "ocr_page_batches_attempted": 1,
+                    "ocr_page_batches_succeeded": 0,
+                    "failed_page_ranges": [f"1-{total_pages}"],
+                    "failure_kind": self._ocr_failure_kind(exc),
+                })
+                raise
+
+            details.update({
+                "extraction_completeness": "complete",
+                "ocr_page_batches_attempted": 1,
+                "ocr_page_batches_succeeded": 1,
+            })
+            return extracted_text
         
         # Chunked processing to reduce peak memory usage
         all_text: list[str] = []
         chunks_attempted = 0
         chunks_succeeded = 0
         chunks_failed = 0
+        failed_page_ranges: list[str] = []
+        failure_kinds: set[str] = set()
         
         with fitz.open(input_pdf_path) as src_doc:
             total_pages = src_doc.page_count
@@ -440,11 +490,34 @@ class PDFTextExtractor(FileTextExtractor):
                         logger.debug(f"Successfully processed pages {start_page + 1}-{end_page}")
                     except Exception as e:
                         chunks_failed += 1
+                        failed_page_ranges.append(f"{start_page + 1}-{end_page}")
+                        failure_kinds.add(self._ocr_failure_kind(e))
                         logger.warning(f"OCR failed for pages {start_page + 1}-{end_page}: {e}")
                         continue
 
         combined = "".join(all_text)
+        if chunks_succeeded == 0:
+            completeness = "none"
+        elif chunks_failed:
+            completeness = "partial"
+        else:
+            completeness = "complete"
+
+        details.update({
+            "extraction_completeness": completeness,
+            "ocr_page_batches_attempted": chunks_attempted,
+            "ocr_page_batches_succeeded": chunks_succeeded,
+        })
+        if failed_page_ranges:
+            details["failed_page_ranges"] = failed_page_ranges
+
         if not combined.strip():
+            if chunks_succeeded == 0:
+                details["failure_kind"] = (
+                    failure_kinds.pop() if len(failure_kinds) == 1 else "ocr_all_chunks_failed"
+                )
+            else:
+                details["failure_kind"] = "no_recognized_text"
             raise TextExtractionError(
                 f"OCR produced no text for {input_pdf_path} (chunk_size={chunk_size}, "
                 f"chunks_attempted={chunks_attempted}, chunks_succeeded={chunks_succeeded}, chunks_failed={chunks_failed})"
@@ -515,11 +588,15 @@ class PDFTextExtractor(FileTextExtractor):
             chunk_size = 1 if pdf_document.has_large_format else 5
             logger.info(f"Processing PDF in chunks of {chunk_size} pages to reduce memory usage")
 
-        pdf_text = self.extract_text_with_ocr(pdf_path=pdf_document.path,
-                                              ocr_params=ocr_params,
-                                              chunk_size=chunk_size)
+        pdf_text = self.extract_text_with_ocr(
+            pdf_path=pdf_document.path,
+            ocr_params=ocr_params,
+            chunk_size=chunk_size,
+            total_pages=pdf_document.page_count,
+        )
 
         if len((pdf_text or "").strip()) < self.ocr_min_text_chars:
+            self._last_extraction_tool_details["failure_kind"] = "no_recognized_text"
             raise TextExtractionError(
                 f"OCR text below threshold for {pdf_document.path} "
                 f"(chars={len((pdf_text or '').strip())}, min={self.ocr_min_text_chars}, "
@@ -543,6 +620,7 @@ class PDFTextExtractor(FileTextExtractor):
         """
         
         self._last_involved_ocr = False
+        self._last_extraction_tool_details = {}
 
         # Initialize document handle and result container
         logger.debug(f"__call__: Starting extraction for file {pdf_filepath}")
@@ -559,6 +637,7 @@ class PDFTextExtractor(FileTextExtractor):
             # PyMuPDF can open encrypted PDFs only with a password; streaming doesn't help.
             if pdf.is_encrypted:
                 logger.warning(f"PDF is encrypted, cannot extract text: {pdf.name}")
+                self._last_extraction_tool_details = {"failure_kind": "encrypted_pdf"}
                 raise ValueError(f"PDF file is encrypted and cannot be processed: {pdf.name}")
             
             # if the file is small enough, read it into memory

@@ -80,7 +80,8 @@ def run_office_worker(
     mem_mb: int | None = OFFICE_WORKER_MEM_MB,
     config: dict | None = None,
     worker_cmd: list[str] | None = None,
-) -> str:
+    return_details: bool = False,
+) -> str | tuple[str, dict]:
     source = validate_file(str(input_path))
     worker_config = config or {}
     project_root = Path(__file__).resolve().parents[1]
@@ -157,6 +158,16 @@ def run_office_worker(
             f"office worker crash: reason=worker_crash retryable=True worker_exit_code={result.returncode} worker_stderr_tail={stderr_tail}"
         )
 
+    worker_metadata = payload.get("metadata")
+    extraction_tool_details = (
+        worker_metadata.get("extraction_tool_details", {})
+        if isinstance(worker_metadata, dict)
+        else {}
+    )
+    if not isinstance(extraction_tool_details, dict):
+        extraction_tool_details = {}
+    if return_details:
+        return text, extraction_tool_details
     return text
 
 
@@ -372,11 +383,18 @@ class WordFileTextExtractor(FileTextExtractor):
         self.max_output_chars = max_output_chars
 
     def __call__(self, path: str) -> str:
+        self._last_extraction_tool_details = {}
         source = validate_file(path)
         ext = source.suffix.lower().lstrip(".")
 
         if _should_route_to_office_subprocess(source, ext):
-            return run_office_worker(source, config=self._worker_config())
+            text, extraction_tool_details = run_office_worker(
+                source,
+                config=self._worker_config(),
+                return_details=True,
+            )
+            self._last_extraction_tool_details = extraction_tool_details
+            return text
 
         method_used = ""
 
@@ -403,6 +421,14 @@ class WordFileTextExtractor(FileTextExtractor):
                 "Word extraction truncated output",
                 extra={"source": str(source), "max_output_chars": self.max_output_chars, "truncated": True},
             )
+
+        extraction_tool_details = {"extraction_method": method_used}
+        if truncated:
+            extraction_tool_details.update({
+                "extraction_completeness": "partial",
+                "completeness_reason": "output_character_limit",
+            })
+        self._last_extraction_tool_details = extraction_tool_details
 
         logger.info(
             "Word extraction completed",
@@ -484,11 +510,18 @@ class PresentationTextExtractor(FileTextExtractor):
         self.converter = converter or OfficeConverter(default_timeout_s=120)
 
     def __call__(self, path: str) -> str:
+        self._last_extraction_tool_details = {}
         source = validate_file(path)
         ext = source.suffix.lower().lstrip(".")
 
         if _should_route_to_office_subprocess(source, ext):
-            return run_office_worker(source, config=self._worker_config())
+            text, extraction_tool_details = run_office_worker(
+                source,
+                config=self._worker_config(),
+                return_details=True,
+            )
+            self._last_extraction_tool_details = extraction_tool_details
+            return text
 
         if ext in ("pptx", "pptm", "ppsx"):
             text, slide_count, shapes_scanned, truncated, notes_included = self._extract_pptx(source)
@@ -507,6 +540,13 @@ class PresentationTextExtractor(FileTextExtractor):
             raise ValueError(f"Unsupported extension for presentation extractor: {ext}")
 
         normalized = _normalize_office_text(text)
+        extraction_tool_details = {"extraction_method": method_used}
+        if truncated:
+            extraction_tool_details.update({
+                "extraction_completeness": "partial",
+                "completeness_reason": "configured_limit",
+            })
+        self._last_extraction_tool_details = extraction_tool_details
         logger.info(
             "Presentation extraction completed",
             extra={
@@ -648,11 +688,18 @@ class SpreadsheetTextExtractor(FileTextExtractor):
         self.converter = converter or OfficeConverter()
 
     def __call__(self, path: str) -> str:
+        self._last_extraction_tool_details = {}
         source = validate_file(path)
         ext = source.suffix.lower().lstrip(".")
 
         if _should_route_to_office_subprocess(source, ext):
-            return run_office_worker(source, config=self._worker_config())
+            text, extraction_tool_details = run_office_worker(
+                source,
+                config=self._worker_config(),
+                return_details=True,
+            )
+            self._last_extraction_tool_details = extraction_tool_details
+            return text
 
         if ext in ("xlsx", "xlsm"):
             text, sheets_scanned, rows_scanned, cells_scanned, truncated = self._extract_xlsx(source)
@@ -671,6 +718,13 @@ class SpreadsheetTextExtractor(FileTextExtractor):
             raise ValueError(f"Unsupported extension for spreadsheet extractor: {ext}")
 
         normalized = _normalize_office_text(text)
+        extraction_tool_details = {"extraction_method": method_used}
+        if truncated:
+            extraction_tool_details.update({
+                "extraction_completeness": "partial",
+                "completeness_reason": "configured_limit",
+            })
+        self._last_extraction_tool_details = extraction_tool_details
         logger.info(
             "Spreadsheet extraction completed",
             extra={

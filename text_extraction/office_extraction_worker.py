@@ -118,17 +118,20 @@ def _build_spreadsheet_extractor(config: dict) -> SpreadsheetTextExtractor:
     )
 
 
-def _extract_text(input_path: Path, config: dict) -> str:
+def _extract_text(input_path: Path, config: dict) -> tuple[str, dict]:
     ext = input_path.suffix.lower().lstrip(".")
 
     if ext in WORD_EXTENSIONS:
-        return _build_word_extractor(config)(str(input_path))
-    if ext in PRESENTATION_EXTENSIONS:
-        return _build_presentation_extractor(config)(str(input_path))
-    if ext in SPREADSHEET_EXTENSIONS:
-        return _build_spreadsheet_extractor(config)(str(input_path))
+        extractor = _build_word_extractor(config)
+    elif ext in PRESENTATION_EXTENSIONS:
+        extractor = _build_presentation_extractor(config)
+    elif ext in SPREADSHEET_EXTENSIONS:
+        extractor = _build_spreadsheet_extractor(config)
+    else:
+        raise TextExtractionError(f"Unsupported extension for office worker: {ext}")
 
-    raise TextExtractionError(f"Unsupported extension for office worker: {ext}")
+    text = extractor(str(input_path))
+    return text, extractor.extraction_metadata_dict()["extraction_tool_details"]
 
 
 def _emit_json(payload: dict) -> int:
@@ -168,7 +171,8 @@ def main() -> int:
         config = _parse_config(args.config_json)
 
         logger.info("Office worker start: path=%s ext=%s", input_path, input_path.suffix.lower())
-        text = _extract_text(input_path, config)
+        text, extraction_tool_details = _extract_text(input_path, config)
+        metadata["extraction_tool_details"] = extraction_tool_details
 
         metadata["duration_ms"] = int((time.time() - started) * 1000)
         return _emit_json(
