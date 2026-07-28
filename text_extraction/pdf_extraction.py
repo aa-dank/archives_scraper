@@ -262,12 +262,20 @@ class PDFTextExtractor(FileTextExtractor):
     def _ocr_failure_kind(error: Exception) -> str:
         """Classify OCR failures that have a clear, actionable remediation."""
         message = str(error).lower()
+        # if the error message contains "failed to fill bitmap rectangle" or "pypdfium", classify as ocr_rasterization_failed
+        if "failed to fill bitmap rectangle" in message or "pypdfium" in message:
+            return "ocr_rasterization_failed"
+        # if the error message contains any of the known pixel limit markers, classify as image_pixel_limit
         if any(marker in message for marker in ("max-image-mpixels", "max_image_mpixels", "pixel limit", "decompressionbomb")):
             return "image_pixel_limit"
+        # if the error message contains "tesseract timeout" or "ocr subprocess timed out", classify as timeout
         if "timed out" in message or "timeout" in message:
             return "ocr_timeout"
+        # ocrmypdf returns -9 when the process is killed by the OS, which is usually due to OOM.
         if any(marker in message for marker in ("out of memory", "oom", "likely oom")):
             return "ocr_memory_limit"
+
+        # else, if the error message contains "ocr subprocess failed" or "ocr subprocess killed", classify as ocr_subprocess_failed
         return "ocr_all_chunks_failed"
 
     @staticmethod
