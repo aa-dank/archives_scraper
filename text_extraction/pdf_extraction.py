@@ -262,10 +262,10 @@ class PDFTextExtractor(FileTextExtractor):
     def _ocr_failure_kind(error: Exception) -> str:
         """Classify OCR failures that have a clear, actionable remediation."""
         message = str(error).lower()
-        # if the error message contains "failed to fill bitmap rectangle" or "pypdfium", classify as ocr_rasterization_failed
+        # PDFium could not rasterize the PDF page into an image for OCR.
         if "failed to fill bitmap rectangle" in message or "pypdfium" in message:
             return "ocr_rasterization_failed"
-        # if the error message contains any of the known pixel limit markers, classify as image_pixel_limit
+        # OCRmyPDF or Pillow rejected an image that exceeds its configured pixel limit.
         if any(marker in message for marker in ("max-image-mpixels", "max_image_mpixels", "pixel limit", "decompressionbomb")):
             return "image_pixel_limit"
         # if the error message contains "tesseract timeout" or "ocr subprocess timed out", classify as timeout

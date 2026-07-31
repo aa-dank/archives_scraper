@@ -12,6 +12,11 @@ import sys
 
 import click
 from dotenv import load_dotenv
+
+# Load environment variables before importing project modules, because several
+# extractors read their subprocess limits during module initialization.
+load_dotenv()
+
 from sqlalchemy.orm import sessionmaker
 
 from db.db import get_db_engine
@@ -26,11 +31,6 @@ from text_extraction.office_doc_extraction import (
 from text_extraction.pdf_extraction import PDFTextExtractor
 from text_extraction.web_extraction import EmailTextExtractor, HtmlTextExtractor
 from worker import run_worker
-
-
-# Load environment variables early so Click options using envvar=... can
-# see values from a local .env file.
-load_dotenv()
 
 
 @click.command()
