@@ -158,13 +158,14 @@ def next_files_needing_content(
     limit: int = 10,
     include_failures: bool = False,
     randomize: bool = False,
+    target_hashes: set[str] | None = None,
 ) -> list:
     """
     Fetch the next batch of files needing content extraction.
     
-    Returns files that have no FileContent row (Option A semantics).
-    By default, excludes files with existing failure records to prevent
-    infinite requeue loops.
+    Returns files that have no FileContent row (Option A semantics), unless
+    exact target hashes are supplied. Targeted runs deliberately include
+    already-processed and previously failed files so they can be reprocessed.
     
     Parameters
     ----------
@@ -179,6 +180,9 @@ def next_files_needing_content(
         If False (default), exclude files with any failure record.
     randomize : bool, default=False
         If True, randomize file order before applying limit.
+    target_hashes : set[str] | None, default=None
+        If provided, return only these hashes, regardless of existing content
+        or failure records.
     
     Returns
     -------
@@ -197,13 +201,18 @@ def next_files_needing_content(
         normalized = [ext.lower().lstrip('.') for ext in extensions]
         query = query.filter(func.lower(File.extension).in_(normalized))
     
-    # Base condition: no successful FileContent row (Option A)
-    query = query.filter(FileContent.file_hash.is_(None))
-    
-    # Apply failure filtering
-    if not include_failures:
-        # Exclude files that have a failure record
-        query = query.filter(FileContentFailure.file_hash.is_(None))
+    if target_hashes:
+        # Targeted mode is an explicit reprocess request, so it bypasses the
+        # normal no-content and failure filters.
+        query = query.filter(File.hash.in_(target_hashes))
+    else:
+        # Base condition: no successful FileContent row (Option A)
+        query = query.filter(FileContent.file_hash.is_(None))
+
+        # Apply failure filtering
+        if not include_failures:
+            # Exclude files that have a failure record
+            query = query.filter(FileContentFailure.file_hash.is_(None))
     
     if randomize:
         query = query.order_by(func.random())
@@ -213,7 +222,14 @@ def next_files_needing_content(
     query = query.limit(limit)
     
     files = query.all()
-    logger.debug(f"Fetched {len(files)} files needing content extraction (include_failures={include_failures})")
+    logger.debug(
+        "Fetched files for extraction",
+        extra={
+            "count": len(files),
+            "include_failures": include_failures,
+            "target_hash_count": len(target_hashes) if target_hashes else 0,
+        },
+    )
     return files
 
 
@@ -466,16 +482,17 @@ def process_one_file(
                 session.add(dm)
 
             # Generate and insert text chunks for FTS
+            # Delete first even when text is empty so a targeted reprocess
+            # cannot leave stale chunks from a previous extraction.
+            session.query(FileContentFtsChunk).filter(
+                FileContentFtsChunk.file_hash == file_record.hash
+            ).delete()
             if extracted_text.strip():
                 chunk_rows = TextChunker.build_chunk_rows(
                     file_hash=file_record.hash,
                     text=extracted_text,
                     chunked_at=now_fn(),
                 )
-                # Delete existing chunks for this file (safe on re-run)
-                session.query(FileContentFtsChunk).filter(
-                    FileContentFtsChunk.file_hash == file_record.hash
-                ).delete()
                 for chunk_row in chunk_rows:
                     session.add(FileContentFtsChunk(**chunk_row))
 
@@ -649,6 +666,7 @@ def run_worker(
     enable_date_extraction: bool = True,
     include_failures: bool = False,
     randomize: bool = False,
+    target_hashes: set[str] | None = None,
 ) -> int:
     """
     Main worker execution loop.
@@ -684,12 +702,18 @@ def run_worker(
         If False (default), exclude files that have previously failed.
     randomize : bool, default=False
         If True, randomize file retrieval order each batch.
+    target_hashes : set[str] | None, default=None
+        If provided, process each matching hash once, including hashes with
+        existing content or failure rows, then exit.
     
     Returns
     -------
     int
         Exit code: 0 (clean), 2 (config error), 3 (runtime failure)
     """
+    targeted_mode = bool(target_hashes)
+    remaining_target_hashes = set(target_hashes or ())
+
     # Validate configuration
     if not extractors:
         logger.error("No extractors provided")
@@ -723,8 +747,16 @@ def run_worker(
             "enable_date_extraction": enable_date_extraction,
             "include_failures": include_failures,
             "randomize": randomize,
+            "target_hash_count": len(remaining_target_hashes),
+            "mode": "targeted" if targeted_mode else "polling",
         }
     )
+
+    if targeted_mode:
+        logger.info(
+            "Targeted mode will process each requested hash once and then exit",
+            extra={"target_hash_count": len(remaining_target_hashes)},
+        )
 
     date_extractor = DateExtractor() if enable_date_extraction else None
     if enable_date_extraction:
@@ -775,9 +807,20 @@ def run_worker(
                     limit=batch_limit,
                     include_failures=include_failures,
                     randomize=randomize,
+                    target_hashes=remaining_target_hashes if targeted_mode else None,
                 )
                 
                 if not files:
+                    if targeted_mode:
+                        logger.info(
+                            "Targeted processing complete",
+                            extra={
+                                "processed": run_controller.total_processed,
+                                "unmatched_target_hash_count": len(remaining_target_hashes),
+                            },
+                        )
+                        return 0
+
                     logger.info("No files needing processing")
                     if limit is not None:
                         logger.info(
@@ -828,6 +871,8 @@ def run_worker(
                     )
                     batch_results[result["status"]] += 1
                     run_controller.record_processed()
+                    if targeted_mode:
+                        remaining_target_hashes.discard(file_record.hash)
                 
                 logger.info(
                     f"Batch complete",
@@ -850,6 +895,13 @@ def run_worker(
                     )
                     return 0
                 
+                if targeted_mode and not remaining_target_hashes:
+                    logger.info(
+                        "Targeted processing complete",
+                        extra={"processed": run_controller.total_processed},
+                    )
+                    return 0
+
                 # Brief sleep before next batch
                 sleep_seconds = run_controller.sleep_seconds(idle=False)
                 if sleep_seconds <= 0:

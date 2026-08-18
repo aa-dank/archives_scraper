@@ -128,6 +128,12 @@ from worker import run_worker
     help="Randomize database file selection order for scraping",
 )
 @click.option(
+    "--hashes",
+    type=str,
+    envvar="TARGET_HASHES",
+    help="Comma-separated file hashes to process once, including already-processed files",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Perform dry run without persisting changes",
@@ -146,6 +152,7 @@ def main(
     json_logs: bool,
     include_failures: bool,
     randomize: bool,
+    hashes: str | None,
     dry_run: bool,
 ) -> None:
     """
@@ -174,6 +181,13 @@ def main(
     if extensions:
         ext_set = set(ext.strip() for ext in extensions.split(",") if ext.strip())
         logger.info(f"Filtering to extensions: {ext_set}")
+
+    target_hashes = None
+    if hashes is not None:
+        target_hashes = {file_hash.strip() for file_hash in hashes.split(",") if file_hash.strip()}
+        if not target_hashes:
+            raise click.UsageError("--hashes must include at least one non-empty file hash")
+        logger.info("Targeted mode enabled", extra={"target_hash_count": len(target_hashes)})
     
     # Build extractors
     extractors = [
@@ -225,6 +239,7 @@ def main(
             enable_date_extraction=enable_date_extraction,
             include_failures=include_failures,
             randomize=randomize,
+            target_hashes=target_hashes,
             dry_run=dry_run,
         )
         

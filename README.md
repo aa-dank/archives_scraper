@@ -63,6 +63,11 @@ Run continuously with polling:
 python -m cli --poll-seconds 5.0
 ```
 
+Reprocess one file hash and exit (including a hash that already has content):
+```bash
+python -m cli --hashes "<file-hash>" --no-embed
+```
+
 ### Command-Line Options
 
 ```
@@ -78,6 +83,7 @@ python -m cli --poll-seconds 5.0
                           Include/exclude previously failed files [default: exclude]
 --randomize / --no-randomize
                           Randomize database file retrieval order [default: no-randomize]
+--hashes TEXT             Comma-separated file hashes to process once, including already-processed files
 --log-level [DEBUG|INFO|WARNING|ERROR]  Logging level (case-insensitive) [default: INFO]
 --log-file PATH           Path to log file
 --json-logs               Output logs in JSON format
@@ -101,6 +107,7 @@ export JSON_LOGS=true
 export ENABLE_EMBEDDING=false
 export EMBEDDER=minilm
 export INCLUDE_FAILURES=false
+# export TARGET_HASHES="<file-hash>"
 export FILE_SERVER_MOUNT=/mnt/n/PPDO/Records
 # Optional stable provenance identifier; defaults to the operating-system hostname
 # export SCRAPER_HOST_NAME=ppdo-prod-app-1.vm.aws.ucsc.edu
