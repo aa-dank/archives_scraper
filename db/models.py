@@ -153,6 +153,14 @@ class Caan(Base):
 
 class Project(Base):
     __tablename__ = 'projects'
+    __table_args__ = (
+        Index(
+            "ix_projects_number_normalized",
+            text("lower(btrim(number))"),
+            unique=False,
+            postgresql_using="btree",
+        ),
+    )
     id = Column(Integer, primary_key=True)
     fmp_id_primary = Column(Integer, unique=True)
     number = Column(String, nullable=False)
@@ -210,6 +218,15 @@ class Contract(Base):
 
 class ProjectCaan(Base):
     __tablename__ = 'project_caans'
+    __table_args__ = (
+        Index(
+            "ix_project_caans_caan_id_project_id",
+            "caan_id",
+            "project_id",
+            unique=False,
+            postgresql_using="btree",
+        ),
+    )
     project_id = Column(Integer, ForeignKey('projects.id'), primary_key=True)
     caan_id = Column(Integer, ForeignKey('caans.id'), primary_key=True)
     project = relationship("Project", back_populates="project_caans")
