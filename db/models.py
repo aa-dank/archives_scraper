@@ -17,6 +17,9 @@ Base = declarative_base()
 
 class File(Base):
     __tablename__ = 'files'
+    __table_args__ = (
+        Index("ix_files_size_lower_extension", "size", text("lower(extension)")),
+    )
     id = Column(Integer, primary_key=True)
     hash = Column(String, nullable=False, unique=True, comment="SHA1 File hash for integrity checks.")
     size = Column(BigInteger, nullable=False, comment="File size in bytes.")
