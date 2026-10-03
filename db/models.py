@@ -3,8 +3,8 @@
 import logging
 from pathlib import Path, PurePosixPath
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text, Boolean, Numeric, Index, text, Float, JSON, CheckConstraint, Date, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text, Boolean, Numeric, Index, text, Double, Float, JSON, CheckConstraint, Date, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -141,8 +141,18 @@ class ArchivedFile(Base):
 
 class Caan(Base):
     __tablename__ = 'caans'
+    __table_args__ = (
+        CheckConstraint(
+            "(latitude IS NULL) = (longitude IS NULL)",
+            name="ck_caans_coordinates_both_or_neither",
+        ),
+        CheckConstraint("latitude BETWEEN -90 AND 90", name="ck_caans_latitude_range"),
+        CheckConstraint("longitude BETWEEN -180 AND 180", name="ck_caans_longitude_range"),
+    )
     id = Column(Integer, primary_key=True)
-    fmp_id_primary = Column(Integer, unique=True)
+    fmp_id_primary = Column(PGUUID(as_uuid=True), unique=True)
+    latitude = Column(Double)
+    longitude = Column(Double)
     caan = Column(String, nullable=False, unique=True)
     name = Column(String)
     description = Column(String)
