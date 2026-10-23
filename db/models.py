@@ -291,11 +291,13 @@ class WorkerTask(Base):
     id = Column(Integer, primary_key=True)
     task_id = Column(String(255), nullable=False)
     time_enqueued = Column(DateTime(timezone=False), nullable=False)
+    time_started = Column(DateTime(timezone=False))
+    time_updated = Column(DateTime(timezone=False))
     time_completed = Column(DateTime(timezone=False))
     origin = Column(String(255), nullable=False)
     function_name = Column(String(255))
     status = Column(String(255))
-    task_results = Column(JSON)
+    status_details = Column(JSON)
 
 
 class FileContentFailure(Base):
