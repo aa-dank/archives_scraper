@@ -16,6 +16,30 @@ Use one of these dependency profiles based on how you run the worker:
 - If you do not need embeddings, run with `--no-embed` and avoid treating CUDA packages as required runtime dependencies for extraction.
 - If you do need embeddings, prefer CPU-only PyTorch resolution in environment management to avoid unnecessary GPU runtime packages.
 
+## Native Package Compatibility Baseline (Linux)
+
+The OCR and document-conversion pipeline is validated against the following native package baseline:
+
+- Tesseract 5.5.x (recommended: 5.5.4)
+- Leptonica 1.87.x
+- Ghostscript 9.56.1 (Amazon Linux package line)
+- jbig2dec 0.19 (Amazon Linux package line)
+- LibreOffice 26.x bundle (installed as a unit)
+
+Python dependencies are constrained to compatible major-version ranges so lockfile resolution does not drift across unvalidated major upgrades:
+
+- `ocrmypdf>=17.5.0,<18`
+- `pytesseract>=0.3.13,<0.4`
+- `pypdfium2>=5.9.0,<6`
+- `pymupdf>=1.27.2.3,<1.29`
+- `pillow>=12.2.0,<13`
+
+Operational notes:
+
+- `pytesseract` shells out to the system `tesseract` binary; traineddata files are managed separately from Python packaging.
+- OCRmyPDF uses external OCR/PDF tooling from the host, so Ghostscript/Tesseract package updates should be validated with a CLI smoke check.
+- LibreOffice should be upgraded as a complete bundle (not partial RPM swaps) for Office fallback conversion stability.
+
 ## Architecture
 
 The system consists of three main components:
