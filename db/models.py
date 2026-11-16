@@ -24,6 +24,22 @@ class File(Base):
     hash = Column(String, nullable=False, unique=True, comment="SHA1 File hash for integrity checks.")
     size = Column(BigInteger, nullable=False, comment="File size in bytes.")
     extension = Column(String)
+    content_restricted_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment=(
+            "Time the active content restriction was applied. "
+            "NULL means no active restriction is recorded."
+        ),
+    )
+    restriction_reason = Column(
+        Text,
+        nullable=True,
+        comment=(
+            "Optional reason for the content restriction. "
+            "Record a category or rationale without sensitive values."
+        ),
+    )
     locations = relationship("FileLocation", back_populates="file", cascade="all, delete-orphan")
     content = relationship("FileContent", back_populates="file", uselist=False, cascade="all, delete-orphan", foreign_keys="[FileContent.file_hash]")
     date_mentions = relationship(
